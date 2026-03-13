@@ -60,8 +60,10 @@ const statusColor: Record<string, string> = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+type SessionSchedule = Pick<ClassroomSchedule, "schedule_type" | "start_date" | "end_date">;
+
 function getSessionDatesInRange(
-  schedule: ClassroomSchedule,
+  schedule: SessionSchedule,
   filterStart: Date,
   filterEnd: Date
 ): Date[] {
@@ -336,20 +338,19 @@ const ClassroomSchedules: React.FC = () => {
   }, [schedules, filterClassroom, filterSubject, filterStatus, filterSchedType, filterRangeStart, filterRangeEnd, hasDateFilter]);
 
   // Preview sessions when creating a new schedule
-  const formSessionPreview = useMemo(() => {
-    if (!scheduleType || !startDate || !endDate) return [];
-    return getSessionDatesInRange(
-      {
-        schedule_type: scheduleType as ScheduleType,
-        start_date: startDate.toISOString().split("T")[0],
-        end_date: endDate.toISOString().split("T")[0],
-        enrolled_students: [],
-      } as ClassroomSchedule,
-      startDate,
-      endDate
-    );
-  }, [scheduleType, startDate, endDate]);
+const formSessionPreview = useMemo(() => {
+  if (!scheduleType || !startDate || !endDate) return [];
 
+  return getSessionDatesInRange(
+    {
+      schedule_type: scheduleType,
+      start_date: startDate.toISOString().split("T")[0],
+      end_date: endDate.toISOString().split("T")[0],
+    },
+    startDate,
+    endDate
+  );
+}, [scheduleType, startDate, endDate]);
   // ── Handlers ──────────────────────────────────────────────────────────────
 
   const handleSaveSchedule = async () => {

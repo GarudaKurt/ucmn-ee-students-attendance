@@ -17,7 +17,6 @@ import { signOut } from "firebase/auth";
 import { auth } from "@/../../firebase/configFirebase";
 
 const navItems = [
-  { title: "Dashboard",          url: "/dashboard/home",        icon: Home },
   { title: "Classroom Schedule", url: "/dashboard/schedules",   icon: Calendar },
   { title: "Attendance",         url: "/dashboard/information", icon: Search },
   { title: "Enroll Students",    url: "/dashboard/users",       icon: User2 },

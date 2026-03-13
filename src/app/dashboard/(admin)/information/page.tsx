@@ -476,7 +476,6 @@ const AttendanceMonitoring: React.FC = () => {
               date:           today,
               time_in:        timeIn,
               time_out:       timeOut,
-              status,
             });
           } else {
             // Record exists → sensor is always the source of truth, overwrite with latest values
