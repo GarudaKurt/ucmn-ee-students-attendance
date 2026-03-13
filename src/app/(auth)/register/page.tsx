@@ -6,28 +6,65 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useRouter } from "next/navigation";
-
-import { useAuth } from "@/app/context/useAuth";
+import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
+import { auth } from "@/../../firebase/configFirebase";
 
 const Register = () => {
   const [username, setUsername] = useState<string>("");
   const [email, setEmail] = useState<string>("");
   const [password, setPassword] = useState<string>("");
   const [confirmPass, setConfirmPass] = useState<string>("");
+  const [error, setError] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(false);
 
-  const route = useRouter();
-  const { create_user } = useAuth();
+  const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    create_user(username, email, password, confirmPass);
+    setError("");
+
+    if (password !== confirmPass) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      // Save the username as displayName in Firebase Auth
+      await updateProfile(userCredential.user, { displayName: username });
+      router.push("/dashboard"); // change to your protected route
+    } catch (err: any) {
+      switch (err.code) {
+        case "auth/email-already-in-use":
+          setError("An account with this email already exists.");
+          break;
+        case "auth/invalid-email":
+          setError("Invalid email address.");
+          break;
+        case "auth/weak-password":
+          setError("Password is too weak. Use at least 6 characters.");
+          break;
+        default:
+          setError("Registration failed. Please try again.");
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   const signIn = () => {
-    route.push("/signin");
+    router.push("/signin");
   };
+
   return (
-    <div className=" min-h-screen flex justify-center items-center mt-2 bg-white">
+    <div className="min-h-screen flex justify-center items-center mt-2 bg-white">
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle>Create your account</CardTitle>
@@ -36,7 +73,7 @@ const Register = () => {
           <form onSubmit={handleSubmit}>
             <div className="flex flex-col gap-6">
               <div className="grid gap-2">
-                <Label htmlFor="text">Username</Label>
+                <Label htmlFor="username">Username</Label>
                 <Input
                   id="username"
                   type="text"
@@ -55,8 +92,8 @@ const Register = () => {
                   onChange={(e) => setEmail(e.target.value)}
                 />
               </div>
-              <Label htmlFor="password">Password</Label>
               <div className="grid gap-2">
+                <Label htmlFor="password">Password</Label>
                 <Input
                   id="password"
                   type="password"
@@ -65,8 +102,8 @@ const Register = () => {
                   onChange={(e) => setPassword(e.target.value)}
                 />
               </div>
-              <Label htmlFor="password">Confirm password</Label>
               <div className="grid gap-2">
+                <Label htmlFor="confirmpassword">Confirm Password</Label>
                 <Input
                   id="confirmpassword"
                   type="password"
@@ -75,10 +112,13 @@ const Register = () => {
                   onChange={(e) => setConfirmPass(e.target.value)}
                 />
               </div>
+              {error && (
+                <p className="text-sm text-red-500 text-center">{error}</p>
+              )}
             </div>
             <div className="flex flex-col gap-2 mt-4">
-              <Button type="submit" className="w-full">
-                Create Account
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? "Creating Account..." : "Create Account"}
               </Button>
               <Button variant="outline" className="w-full" onClick={signIn}>
                 Login

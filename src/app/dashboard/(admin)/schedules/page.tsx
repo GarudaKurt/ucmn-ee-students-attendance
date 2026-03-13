@@ -1,63 +1,39 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { format, eachDayOfInterval, parseISO } from "date-fns";
-import { CalendarIcon, PlusCircle, BookOpen, Clock, Users, CalendarDays } from "lucide-react";
+import { CalendarIcon, PlusCircle, BookOpen, Clock, Users, CalendarDays, Loader2, UserPlus, UserMinus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardContent,
+  Card, CardHeader, CardTitle, CardContent,
 } from "@/components/ui/card";
 import {
-  Popover,
-  PopoverTrigger,
-  PopoverContent,
+  Popover, PopoverTrigger, PopoverContent,
 } from "@/components/ui/popover";
 import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
+  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
-  Sheet,
-  SheetClose,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
+  Sheet, SheetClose, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle,
 } from "@/components/ui/sheet";
 import { Calendar } from "@/components/ui/calendar";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type ScheduleType = "MWF" | "TTH" | "FS";
-
-type ClassroomSchedule = {
-  id: number;
-  classroom_name: string;
-  subject_name: string;
-  instructor: string;
-  schedule_type: ScheduleType;
-  start_date: string;
-  end_date: string;
-  time_start: string;
-  time_end: string;
-  status?: "Active" | "Upcoming" | "Completed";
-};
+import { useAuthState } from "react-firebase-hooks/auth";
+import { auth } from "@/../../firebase/configFirebase";
+import {
+  ClassroomSchedule,
+  ScheduleType,
+  createSchedule,
+  subscribeToSchedules,
+  enrollStudent,
+  unenrollStudent,
+  deleteSchedule,
+} from "@/app/services/scheduleService";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat
 const SCHEDULE_DAYS: Record<ScheduleType, number[]> = {
   MWF: [1, 3, 5],
   TTH: [2, 4],
@@ -91,12 +67,9 @@ function getSessionDatesInRange(
 ): Date[] {
   const schedStart = parseISO(schedule.start_date);
   const schedEnd   = parseISO(schedule.end_date);
-
   const windowStart = filterStart > schedStart ? filterStart : schedStart;
   const windowEnd   = filterEnd   < schedEnd   ? filterEnd   : schedEnd;
-
   if (windowStart > windowEnd) return [];
-
   const allowedDays = SCHEDULE_DAYS[schedule.schedule_type];
   return eachDayOfInterval({ start: windowStart, end: windowEnd }).filter(
     (d) => allowedDays.includes(d.getDay())
@@ -113,13 +86,27 @@ const SessionChip: React.FC<{ date: Date }> = ({ date }) => (
 
 // ─── Schedule Card ────────────────────────────────────────────────────────────
 
-type ScheduleCardProps = ClassroomSchedule & {
+type ScheduleCardProps = {
+  schedule: ClassroomSchedule;
   sessionDates?: Date[];
-  onSelectClick?: (schedule: ClassroomSchedule, sessionDates?: Date[]) => void;
+  currentUserUid?: string;
+  onSelectClick: (schedule: ClassroomSchedule, sessionDates?: Date[]) => void;
+  onEnroll: (scheduleId: string) => void;
+  onUnenroll: (scheduleId: string) => void;
+  enrolling: string | null; // scheduleId currently being processed
 };
 
-const ScheduleCard: React.FC<ScheduleCardProps> = (props) => {
+const ScheduleCard: React.FC<ScheduleCardProps> = ({
+  schedule,
+  sessionDates,
+  currentUserUid,
+  onSelectClick,
+  onEnroll,
+  onUnenroll,
+  enrolling,
+}) => {
   const {
+    id,
     classroom_name,
     subject_name,
     instructor,
@@ -129,13 +116,19 @@ const ScheduleCard: React.FC<ScheduleCardProps> = (props) => {
     time_start,
     time_end,
     status = "Active",
-    sessionDates,
-    onSelectClick,
-  } = props;
+    enrolled_students,
+    max_students = 40,
+  } = schedule;
 
   const [showAll, setShowAll] = useState(false);
   const PREVIEW_LIMIT = 6;
   const visible = showAll ? (sessionDates ?? []) : (sessionDates ?? []).slice(0, PREVIEW_LIMIT);
+
+  const isEnrolled = currentUserUid
+    ? enrolled_students.some((s) => s.uid === currentUserUid)
+    : false;
+  const isFull = enrolled_students.length >= max_students;
+  const isProcessing = enrolling === id;
 
   return (
     <Card className="w-full hover:shadow-md transition-shadow border border-gray-200">
@@ -152,19 +145,13 @@ const ScheduleCard: React.FC<ScheduleCardProps> = (props) => {
               <p className="text-xs text-muted-foreground">{classroom_name}</p>
             </div>
           </div>
-          <Badge
-            className={`text-[10px] px-2 py-0.5 border font-medium ${statusColor[status]}`}
-            variant="outline"
-          >
+          <Badge className={`text-[10px] px-2 py-0.5 border font-medium ${statusColor[status]}`} variant="outline">
             {status}
           </Badge>
         </div>
 
         {/* Schedule type */}
-        <Badge
-          className={`text-[10px] px-2 py-0.5 border font-semibold ${scheduleTypeColor[schedule_type]}`}
-          variant="outline"
-        >
+        <Badge className={`text-[10px] px-2 py-0.5 border font-semibold ${scheduleTypeColor[schedule_type]}`} variant="outline">
           {schedule_type} · {SCHEDULE_LABELS[schedule_type]}
         </Badge>
 
@@ -178,8 +165,7 @@ const ScheduleCard: React.FC<ScheduleCardProps> = (props) => {
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <CalendarIcon className="w-3.5 h-3.5" />
           <span>
-            {new Date(start_date).toLocaleDateString()} –{" "}
-            {new Date(end_date).toLocaleDateString()}
+            {new Date(start_date).toLocaleDateString()} – {new Date(end_date).toLocaleDateString()}
           </span>
         </div>
 
@@ -189,7 +175,20 @@ const ScheduleCard: React.FC<ScheduleCardProps> = (props) => {
           <span>{time_start} – {time_end}</span>
         </div>
 
-        {/* Session dates (only when date range filter is active) */}
+        {/* Enrollment count */}
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Users className="w-3.5 h-3.5" />
+          <span>
+            {enrolled_students.length} / {max_students} students enrolled
+          </span>
+          {isFull && (
+            <Badge className="text-[10px] px-1.5 py-0 bg-red-100 text-red-600 border-red-200" variant="outline">
+              Full
+            </Badge>
+          )}
+        </div>
+
+        {/* Session dates in range */}
         {sessionDates && sessionDates.length > 0 && (
           <div className="space-y-1.5">
             <div className="flex items-center gap-1.5 text-xs font-medium text-gray-600">
@@ -210,114 +209,104 @@ const ScheduleCard: React.FC<ScheduleCardProps> = (props) => {
           </div>
         )}
 
-        <Button
-          size="sm"
-          className="mt-1 w-full bg-blue-500 hover:bg-blue-600 text-white text-xs"
-          onClick={() => onSelectClick && onSelectClick(props, sessionDates)}
-        >
-          View Details
-        </Button>
+        {/* Action buttons */}
+        <div className="flex gap-2 pt-1">
+          <Button
+            size="sm"
+            className="flex-1 bg-blue-500 hover:bg-blue-600 text-white text-xs"
+            onClick={() => onSelectClick(schedule, sessionDates)}
+          >
+            View Details
+          </Button>
+
+          {currentUserUid && (
+            isEnrolled ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="flex-1 text-xs border-red-200 text-red-600 hover:bg-red-50"
+                disabled={isProcessing}
+                onClick={() => onUnenroll(id!)}
+              >
+                {isProcessing ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <><UserMinus className="w-3 h-3 mr-1" />Unenroll</>
+                )}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                className="flex-1 text-xs border-green-200 text-green-700 hover:bg-green-50"
+                disabled={isProcessing || isFull}
+                onClick={() => onEnroll(id!)}
+              >
+                {isProcessing ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <><UserPlus className="w-3 h-3 mr-1" />{isFull ? "Full" : "Enroll"}</>
+                )}
+              </Button>
+            )
+          )}
+        </div>
       </CardContent>
     </Card>
   );
 };
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
-
-const MOCK_SCHEDULES: ClassroomSchedule[] = [
-  {
-    id: 1,
-    classroom_name: "Room 101",
-    subject_name: "Mathematics",
-    instructor: "Mr. Santos",
-    schedule_type: "MWF",
-    start_date: "2026-03-01",
-    end_date: "2026-06-01",
-    time_start: "08:00",
-    time_end: "10:00",
-    status: "Active",
-  },
-  {
-    id: 2,
-    classroom_name: "Room 202",
-    subject_name: "Science",
-    instructor: "Ms. Reyes",
-    schedule_type: "TTH",
-    start_date: "2026-03-01",
-    end_date: "2026-06-15",
-    time_start: "10:30",
-    time_end: "12:00",
-    status: "Active",
-  },
-  {
-    id: 3,
-    classroom_name: "Lab A",
-    subject_name: "Computer Science",
-    instructor: "Mr. Cruz",
-    schedule_type: "MWF",
-    start_date: "2026-03-15",
-    end_date: "2026-07-01",
-    time_start: "13:00",
-    time_end: "15:00",
-    status: "Upcoming",
-  },
-  {
-    id: 4,
-    classroom_name: "Room 305",
-    subject_name: "Filipino",
-    instructor: "Ms. Garcia",
-    schedule_type: "FS",
-    start_date: "2026-03-01",
-    end_date: "2026-05-30",
-    time_start: "09:00",
-    time_end: "11:00",
-    status: "Active",
-  },
-  {
-    id: 5,
-    classroom_name: "Room 110",
-    subject_name: "English",
-    instructor: "Ms. Lim",
-    schedule_type: "TTH",
-    start_date: "2026-03-05",
-    end_date: "2026-06-05",
-    time_start: "14:00",
-    time_end: "16:00",
-    status: "Active",
-  },
-];
-
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 const ClassroomSchedules: React.FC = () => {
+  const [user] = useAuthState(auth);
+
   // Filter state
-  const [filterClassroom,   setFilterClassroom]   = useState("");
-  const [filterSubject,     setFilterSubject]     = useState("");
-  const [filterStatus,      setFilterStatus]      = useState("all");
-  const [filterSchedType,   setFilterSchedType]   = useState<"all" | ScheduleType>("all");
-  const [filterRangeStart,  setFilterRangeStart]  = useState<Date | undefined>();
-  const [filterRangeEnd,    setFilterRangeEnd]    = useState<Date | undefined>();
+  const [filterClassroom,  setFilterClassroom]  = useState("");
+  const [filterSubject,    setFilterSubject]    = useState("");
+  const [filterStatus,     setFilterStatus]     = useState("all");
+  const [filterSchedType,  setFilterSchedType]  = useState<"all" | ScheduleType>("all");
+  const [filterRangeStart, setFilterRangeStart] = useState<Date | undefined>();
+  const [filterRangeEnd,   setFilterRangeEnd]   = useState<Date | undefined>();
+
+  // Schedules from Firestore
+  const [schedules, setSchedules] = useState<ClassroomSchedule[]>([]);
+  const [loading,   setLoading]   = useState(true);
+
+  // Enrollment processing state (stores scheduleId being processed)
+  const [enrolling, setEnrolling] = useState<string | null>(null);
+  const [enrollError, setEnrollError] = useState<string>("");
 
   // New schedule form state
-  const [isSheetOpen,    setIsSheetOpen]    = useState(false);
-  const [classroomName,  setClassroomName]  = useState("");
-  const [subjectName,    setSubjectName]    = useState("");
-  const [instructor,     setInstructor]     = useState("");
-  const [scheduleType,   setScheduleType]   = useState<ScheduleType | "">("");
-  const [startDate,      setStartDate]      = useState<Date | undefined>();
-  const [endDate,        setEndDate]        = useState<Date | undefined>();
-  const [timeStart,      setTimeStart]      = useState("");
-  const [timeEnd,        setTimeEnd]        = useState("");
-
-  // Schedule list
-  const [schedules, setSchedules] = useState<ClassroomSchedule[]>(MOCK_SCHEDULES);
+  const [isSheetOpen,   setIsSheetOpen]   = useState(false);
+  const [saving,        setSaving]        = useState(false);
+  const [classroomName, setClassroomName] = useState("");
+  const [subjectName,   setSubjectName]   = useState("");
+  const [instructor,    setInstructor]    = useState("");
+  const [scheduleType,  setScheduleType]  = useState<ScheduleType | "">("");
+  const [startDate,     setStartDate]     = useState<Date | undefined>();
+  const [endDate,       setEndDate]       = useState<Date | undefined>();
+  const [timeStart,     setTimeStart]     = useState("");
+  const [timeEnd,       setTimeEnd]       = useState("");
+  const [maxStudents,   setMaxStudents]   = useState("40");
 
   // Detail sheet
   const [isDetailOpen,         setIsDetailOpen]         = useState(false);
   const [selectedSchedule,     setSelectedSchedule]     = useState<ClassroomSchedule | null>(null);
   const [selectedSessionDates, setSelectedSessionDates] = useState<Date[]>([]);
 
-  // ── Computed ─────────────────────────────────────────────────────────────
+  // ── Subscribe to Firestore real-time updates ──────────────────────────────
+
+  useEffect(() => {
+    setLoading(true);
+    const unsubscribe = subscribeToSchedules((data) => {
+      setSchedules(data);
+      setLoading(false);
+    });
+    return () => unsubscribe(); // cleanup on unmount
+  }, []);
+
+  // ── Computed ──────────────────────────────────────────────────────────────
 
   const hasDateFilter = !!filterRangeStart && !!filterRangeEnd;
 
@@ -328,13 +317,11 @@ const ClassroomSchedules: React.FC = () => {
         if (!s.subject_name.toLowerCase().includes(filterSubject.toLowerCase())) return false;
         if (filterStatus !== "all" && s.status !== filterStatus) return false;
         if (filterSchedType !== "all" && s.schedule_type !== filterSchedType) return false;
-
         if (hasDateFilter) {
           const sStart = parseISO(s.start_date);
           const sEnd   = parseISO(s.end_date);
           if (sStart > filterRangeEnd! || sEnd < filterRangeStart!) return false;
         }
-
         return true;
       })
       .map((s) => ({
@@ -352,38 +339,81 @@ const ClassroomSchedules: React.FC = () => {
   const formSessionPreview = useMemo(() => {
     if (!scheduleType || !startDate || !endDate) return [];
     return getSessionDatesInRange(
-      { schedule_type: scheduleType as ScheduleType, start_date: startDate.toISOString().split("T")[0], end_date: endDate.toISOString().split("T")[0] } as ClassroomSchedule,
+      {
+        schedule_type: scheduleType as ScheduleType,
+        start_date: startDate.toISOString().split("T")[0],
+        end_date: endDate.toISOString().split("T")[0],
+        enrolled_students: [],
+      } as ClassroomSchedule,
       startDate,
       endDate
     );
   }, [scheduleType, startDate, endDate]);
 
-  // ── Handlers ───────────────────────────────────────────────────────────────
+  // ── Handlers ──────────────────────────────────────────────────────────────
 
-  const handleSaveSchedule = () => {
+  const handleSaveSchedule = async () => {
     if (!classroomName || !subjectName || !instructor || !scheduleType || !startDate || !endDate || !timeStart || !timeEnd) {
       alert("Please fill in all fields.");
       return;
     }
-    setSchedules((prev) => [
-      ...prev,
-      {
-        id: Date.now(),
+    setSaving(true);
+    try {
+      await createSchedule({
         classroom_name: classroomName,
-        subject_name: subjectName,
+        subject_name:   subjectName,
         instructor,
-        schedule_type: scheduleType as ScheduleType,
-        start_date: startDate.toISOString().split("T")[0],
-        end_date:   endDate.toISOString().split("T")[0],
-        time_start: timeStart,
-        time_end:   timeEnd,
-        status: "Upcoming",
-      },
-    ]);
-    setIsSheetOpen(false);
-    setClassroomName(""); setSubjectName(""); setInstructor("");
-    setScheduleType(""); setStartDate(undefined); setEndDate(undefined);
-    setTimeStart(""); setTimeEnd("");
+        schedule_type:  scheduleType as ScheduleType,
+        start_date:     startDate.toISOString().split("T")[0],
+        end_date:       endDate.toISOString().split("T")[0],
+        time_start:     timeStart,
+        time_end:       timeEnd,
+        status:         "Upcoming",
+        max_students:   parseInt(maxStudents, 10) || 40,
+      });
+      setIsSheetOpen(false);
+      // Reset form
+      setClassroomName(""); setSubjectName(""); setInstructor("");
+      setScheduleType(""); setStartDate(undefined); setEndDate(undefined);
+      setTimeStart(""); setTimeEnd(""); setMaxStudents("40");
+    } catch (err: any) {
+      alert("Failed to save schedule: " + err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleEnroll = async (scheduleId: string) => {
+    if (!user) {
+      setEnrollError("You must be logged in to enroll.");
+      return;
+    }
+    setEnrolling(scheduleId);
+    setEnrollError("");
+    try {
+      await enrollStudent(scheduleId, {
+        uid:         user.uid,
+        displayName: user.displayName ?? user.email ?? "Unknown",
+        email:       user.email ?? "",
+      });
+    } catch (err: any) {
+      setEnrollError(err.message);
+    } finally {
+      setEnrolling(null);
+    }
+  };
+
+  const handleUnenroll = async (scheduleId: string) => {
+    if (!user) return;
+    setEnrolling(scheduleId);
+    setEnrollError("");
+    try {
+      await unenrollStudent(scheduleId, user.uid);
+    } catch (err: any) {
+      setEnrollError(err.message);
+    } finally {
+      setEnrolling(null);
+    }
   };
 
   const handleSelectClick = (schedule: ClassroomSchedule, sessionDates?: Date[]) => {
@@ -432,23 +462,12 @@ const ClassroomSchedules: React.FC = () => {
           </CardHeader>
 
           <CardContent className="space-y-3">
-            {/* Row 1 — text search + dropdowns */}
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
-              <Input
-                placeholder="Search classroom..."
-                value={filterClassroom}
-                onChange={(e) => setFilterClassroom(e.target.value)}
-              />
-              <Input
-                placeholder="Search subject..."
-                value={filterSubject}
-                onChange={(e) => setFilterSubject(e.target.value)}
-              />
+              <Input placeholder="Search classroom..." value={filterClassroom} onChange={(e) => setFilterClassroom(e.target.value)} />
+              <Input placeholder="Search subject..." value={filterSubject} onChange={(e) => setFilterSubject(e.target.value)} />
 
               <Select value={filterSchedType} onValueChange={(v) => setFilterSchedType(v as "all" | ScheduleType)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="All Types" />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="All Types" /></SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
                     <SelectLabel>Schedule Type</SelectLabel>
@@ -461,9 +480,7 @@ const ClassroomSchedules: React.FC = () => {
               </Select>
 
               <Select value={filterStatus} onValueChange={setFilterStatus}>
-                <SelectTrigger>
-                  <SelectValue placeholder="All Status" />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="All Status" /></SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
                     <SelectLabel>Status</SelectLabel>
@@ -476,12 +493,10 @@ const ClassroomSchedules: React.FC = () => {
               </Select>
             </div>
 
-            {/* Row 2 — Date range filter */}
             <div className="flex flex-wrap items-center gap-3">
               <span className="text-xs text-muted-foreground font-medium whitespace-nowrap">
                 Filter sessions by date:
               </span>
-
               <Popover>
                 <PopoverTrigger asChild>
                   <Button variant="outline" size="sm" className="justify-start text-left text-xs min-w-[140px]">
@@ -508,12 +523,8 @@ const ClassroomSchedules: React.FC = () => {
                 </PopoverContent>
               </Popover>
 
-              {/* Active filter summary pill */}
               {hasDateFilter && filterSchedType !== "all" && (
-                <Badge
-                  className={`text-xs px-2 py-1 ${scheduleTypeColor[filterSchedType as ScheduleType]}`}
-                  variant="outline"
-                >
+                <Badge className={`text-xs px-2 py-1 ${scheduleTypeColor[filterSchedType as ScheduleType]}`} variant="outline">
                   {filterSchedType} · {format(filterRangeStart!, "MMM d")} – {format(filterRangeEnd!, "MMM d, yyyy")}
                 </Badge>
               )}
@@ -521,38 +532,54 @@ const ClassroomSchedules: React.FC = () => {
           </CardContent>
         </Card>
 
-        {/* ── Results summary bar ── */}
+        {/* ── Enrollment error ── */}
+        {enrollError && (
+          <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-4 py-2">
+            {enrollError}
+          </div>
+        )}
+
+        {/* ── Results bar ── */}
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <span>
-            {filteredResults.length} schedule{filteredResults.length !== 1 ? "s" : ""} found
-          </span>
-          {hasDateFilter && (
+          {loading ? (
+            <span className="flex items-center gap-1.5">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading schedules...
+            </span>
+          ) : (
             <span>
-              · sessions from{" "}
-              <span className="font-medium text-gray-700">{format(filterRangeStart!, "MMM d")}</span>
-              {" "}–{" "}
-              <span className="font-medium text-gray-700">{format(filterRangeEnd!, "MMM d, yyyy")}</span>
+              {filteredResults.length} schedule{filteredResults.length !== 1 ? "s" : ""} found
+              {hasDateFilter && (
+                <> · sessions from{" "}
+                  <span className="font-medium text-gray-700">{format(filterRangeStart!, "MMM d")}</span>
+                  {" "}–{" "}
+                  <span className="font-medium text-gray-700">{format(filterRangeEnd!, "MMM d, yyyy")}</span>
+                </>
+              )}
             </span>
           )}
         </div>
 
         {/* ── Cards ── */}
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {filteredResults.length > 0 ? (
+          {!loading && filteredResults.length > 0 ? (
             filteredResults.map(({ schedule, sessionDates }) => (
               <ScheduleCard
                 key={schedule.id}
-                {...schedule}
+                schedule={schedule}
                 sessionDates={sessionDates}
+                currentUserUid={user?.uid}
                 onSelectClick={handleSelectClick}
+                onEnroll={handleEnroll}
+                onUnenroll={handleUnenroll}
+                enrolling={enrolling}
               />
             ))
-          ) : (
+          ) : !loading ? (
             <div className="col-span-full py-12 text-center space-y-1">
               <p className="text-sm font-medium text-gray-500">No schedules found</p>
               <p className="text-xs text-muted-foreground">Try adjusting your filters or date range.</p>
             </div>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -561,7 +588,7 @@ const ClassroomSchedules: React.FC = () => {
         <SheetContent className="overflow-y-auto">
           <SheetHeader>
             <SheetTitle>New Classroom Schedule</SheetTitle>
-            <SheetDescription>Fill in the details to add a new classroom schedule.</SheetDescription>
+            <SheetDescription>Fill in the details to add a new classroom schedule to Firestore.</SheetDescription>
           </SheetHeader>
 
           <div className="grid gap-4 py-4">
@@ -569,24 +596,23 @@ const ClassroomSchedules: React.FC = () => {
               <Label htmlFor="classroomName">Classroom Name</Label>
               <Input id="classroomName" placeholder="e.g., Room 101" value={classroomName} onChange={(e) => setClassroomName(e.target.value)} />
             </div>
-
             <div className="grid gap-2">
               <Label htmlFor="subjectName">Subject Name</Label>
               <Input id="subjectName" placeholder="e.g., Mathematics" value={subjectName} onChange={(e) => setSubjectName(e.target.value)} />
             </div>
-
             <div className="grid gap-2">
               <Label htmlFor="instructor">Instructor</Label>
               <Input id="instructor" placeholder="e.g., Mr. Santos" value={instructor} onChange={(e) => setInstructor(e.target.value)} />
             </div>
+            <div className="grid gap-2">
+              <Label htmlFor="maxStudents">Max Students</Label>
+              <Input id="maxStudents" type="number" min="1" max="200" value={maxStudents} onChange={(e) => setMaxStudents(e.target.value)} />
+            </div>
 
-            {/* Schedule Type */}
             <div className="grid gap-2">
               <Label>Schedule Type</Label>
               <Select value={scheduleType} onValueChange={(v) => setScheduleType(v as ScheduleType)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select schedule type" />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Select schedule type" /></SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
                     <SelectLabel>Schedule Type</SelectLabel>
@@ -603,7 +629,6 @@ const ClassroomSchedules: React.FC = () => {
               )}
             </div>
 
-            {/* Date range */}
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-2">
                 <Label>Start Date</Label>
@@ -635,7 +660,6 @@ const ClassroomSchedules: React.FC = () => {
               </div>
             </div>
 
-            {/* Session preview */}
             {formSessionPreview.length > 0 && (
               <div className="rounded-md bg-blue-50 border border-blue-100 p-3 space-y-1.5">
                 <p className="text-xs font-semibold text-blue-700">
@@ -654,7 +678,6 @@ const ClassroomSchedules: React.FC = () => {
               </div>
             )}
 
-            {/* Time range */}
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-2">
                 <Label htmlFor="timeStart">Time Start</Label>
@@ -668,8 +691,8 @@ const ClassroomSchedules: React.FC = () => {
           </div>
 
           <SheetFooter>
-            <Button className="bg-blue-500 hover:bg-blue-600 text-white" onClick={handleSaveSchedule}>
-              Save Schedule
+            <Button className="bg-blue-500 hover:bg-blue-600 text-white" onClick={handleSaveSchedule} disabled={saving}>
+              {saving ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Saving...</> : "Save Schedule"}
             </Button>
             <SheetClose asChild>
               <Button variant="outline">Cancel</Button>
@@ -696,6 +719,25 @@ const ClassroomSchedules: React.FC = () => {
               <DetailRow label="End Date"      value={new Date(selectedSchedule.end_date).toLocaleDateString()} />
               <DetailRow label="Time"          value={`${selectedSchedule.time_start} – ${selectedSchedule.time_end}`} />
               <DetailRow label="Status"        value={selectedSchedule.status ?? "—"} />
+              <DetailRow
+                label="Enrollment"
+                value={`${selectedSchedule.enrolled_students.length} / ${selectedSchedule.max_students ?? 40} students`}
+              />
+
+              {/* Enrolled students list */}
+              {selectedSchedule.enrolled_students.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-gray-700">Enrolled Students</p>
+                  <div className="space-y-1 max-h-48 overflow-y-auto">
+                    {selectedSchedule.enrolled_students.map((s, i) => (
+                      <div key={i} className="flex items-center justify-between bg-gray-50 rounded-md px-3 py-1.5 text-xs">
+                        <span className="font-medium">{s.displayName}</span>
+                        <span className="text-muted-foreground">{s.email}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {selectedSessionDates.length > 0 && (
                 <div className="space-y-2">
@@ -703,9 +745,7 @@ const ClassroomSchedules: React.FC = () => {
                     Sessions in filtered range ({selectedSessionDates.length})
                   </p>
                   <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">
-                    {selectedSessionDates.map((d, i) => (
-                      <SessionChip key={i} date={d} />
-                    ))}
+                    {selectedSessionDates.map((d, i) => <SessionChip key={i} date={d} />)}
                   </div>
                 </div>
               )}
@@ -722,7 +762,6 @@ const ClassroomSchedules: React.FC = () => {
     </>
   );
 };
-
 
 const DetailRow: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <div className="grid grid-cols-2 gap-2 border-b pb-2 last:border-0">

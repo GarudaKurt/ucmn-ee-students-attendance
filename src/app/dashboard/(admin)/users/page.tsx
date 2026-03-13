@@ -3,8 +3,7 @@
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { useState, useMemo } from "react";
-import { format } from "date-fns";
+import { useState, useMemo, useEffect } from "react";
 import {
   Form,
   FormControl,
@@ -41,14 +40,23 @@ import {
   PlusCircle,
   CheckCircle2,
   Users,
+  Loader2,
+  AlertCircle,
+  WifiOff,
 } from "lucide-react";
+import {
+  ClassroomSchedule,
+  EnrolledSubject,
+  subscribeToSchedules,
+  registerStudent,
+} from "@/app/services/studentService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type ScheduleType = "MWF" | "TTH" | "FS";
 
-type SubjectSchedule = {
-  id: number;
+type EnrolledEntry = {
+  schedule_id: string;
   subject_name: string;
   classroom_name: string;
   instructor: string;
@@ -57,10 +65,6 @@ type SubjectSchedule = {
   end_date: string;
   time_start: string;
   time_end: string;
-};
-
-type EnrolledEntry = {
-  subject: SubjectSchedule;
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -77,141 +81,112 @@ const scheduleTypeColor: Record<ScheduleType, string> = {
   FS:  "bg-teal-100 text-teal-700 border-teal-200",
 };
 
-// ─── Mock subject+schedule data ───────────────────────────────────────────────
-
-const AVAILABLE_SUBJECTS: SubjectSchedule[] = [
-  {
-    id: 1,
-    subject_name: "Mathematics",
-    classroom_name: "Room 101",
-    instructor: "Mr. Santos",
-    schedule_type: "MWF",
-    start_date: "2026-03-01",
-    end_date: "2026-06-01",
-    time_start: "08:00",
-    time_end: "10:00",
-  },
-  {
-    id: 2,
-    subject_name: "Science",
-    classroom_name: "Room 202",
-    instructor: "Ms. Reyes",
-    schedule_type: "TTH",
-    start_date: "2026-03-01",
-    end_date: "2026-06-15",
-    time_start: "10:30",
-    time_end: "12:00",
-  },
-  {
-    id: 3,
-    subject_name: "Computer Science",
-    classroom_name: "Lab A",
-    instructor: "Mr. Cruz",
-    schedule_type: "MWF",
-    start_date: "2026-03-15",
-    end_date: "2026-07-01",
-    time_start: "13:00",
-    time_end: "15:00",
-  },
-  {
-    id: 4,
-    subject_name: "Filipino",
-    classroom_name: "Room 305",
-    instructor: "Ms. Garcia",
-    schedule_type: "FS",
-    start_date: "2026-03-01",
-    end_date: "2026-05-30",
-    time_start: "09:00",
-    time_end: "11:00",
-  },
-  {
-    id: 5,
-    subject_name: "English",
-    classroom_name: "Room 110",
-    instructor: "Ms. Lim",
-    schedule_type: "TTH",
-    start_date: "2026-03-05",
-    end_date: "2026-06-05",
-    time_start: "14:00",
-    time_end: "16:00",
-  },
-  {
-    id: 6,
-    subject_name: "History",
-    classroom_name: "Room 208",
-    instructor: "Mr. Dela Cruz",
-    schedule_type: "MWF",
-    start_date: "2026-03-01",
-    end_date: "2026-06-01",
-    time_start: "11:00",
-    time_end: "12:30",
-  },
-];
+const statusColor: Record<string, string> = {
+  Active:    "bg-green-100 text-green-700 border-green-200",
+  Upcoming:  "bg-blue-100 text-blue-700 border-blue-200",
+  Completed: "bg-gray-100 text-gray-500 border-gray-200",
+};
 
 // ─── Zod schema ───────────────────────────────────────────────────────────────
 
 const formSchema = z.object({
-  student_id:   z.string().min(1, "Student ID is required"),
-  full_name:    z.string().min(2, "Full name is required"),
-  email:        z.string().email("Enter a valid email"),
-  contact:      z.string().min(11, "Enter a valid contact number"),
-  address:      z.string().min(1, "Address is required"),
-  birthdate:    z.string().min(1, "Birthdate is required"),
-  year_level:   z.string().min(1, "Year level is required"),
-  section:      z.string().min(1, "Section is required"),
-  gender:       z.string().min(1, "Gender is required"),
-  guardian_name: z.string().min(1, "Guardian name is required"),
+  student_id:       z.string().min(1, "Student ID is required"),
+  full_name:        z.string().min(2, "Full name is required"),
+  email:            z.string().email("Enter a valid email"),
+  contact:          z.string().min(11, "Enter a valid contact number"),
+  address:          z.string().min(1, "Address is required"),
+  birthdate:        z.string().min(1, "Birthdate is required"),
+  year_level:       z.string().min(1, "Year level is required"),
+  section:          z.string().min(1, "Section is required"),
+  gender:           z.string().min(1, "Gender is required"),
+  guardian_name:    z.string().min(1, "Guardian name is required"),
   guardian_contact: z.string().min(11, "Guardian contact is required"),
 });
 
 type FormValues = z.infer<typeof formSchema>;
 
-// ─── Subject Row (enrolled) ───────────────────────────────────────────────────
+// ─── Enrolled Row ─────────────────────────────────────────────────────────────
 
 const EnrolledRow: React.FC<{
   entry: EnrolledEntry;
   index: number;
-  onRemove: (id: number) => void;
-}> = ({ entry, index, onRemove }) => {
-  const s = entry.subject;
+  onRemove: (scheduleId: string) => void;
+}> = ({ entry, index, onRemove }) => (
+  <div className="flex items-start gap-3 p-3 rounded-lg border border-gray-100 bg-gray-50 hover:bg-gray-100 transition-colors group">
+    <div className="flex-shrink-0 w-7 h-7 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs font-bold mt-0.5">
+      {index + 1}
+    </div>
+    <div className="flex-1 min-w-0 space-y-1">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-sm font-semibold text-gray-800">{entry.subject_name}</span>
+        <Badge
+          variant="outline"
+          className={`text-[10px] px-1.5 py-0 font-semibold ${scheduleTypeColor[entry.schedule_type]}`}
+        >
+          {entry.schedule_type}
+        </Badge>
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+        <span className="flex items-center gap-1">
+          <BookOpen className="w-3 h-3" />{entry.classroom_name}
+        </span>
+        <span className="flex items-center gap-1">
+          <Users className="w-3 h-3" />{entry.instructor}
+        </span>
+        <span className="flex items-center gap-1">
+          <Clock className="w-3 h-3" />{entry.time_start} – {entry.time_end}
+        </span>
+        <span className="flex items-center gap-1">
+          <CalendarDays className="w-3 h-3" />
+          {SCHEDULE_LABELS[entry.schedule_type]} · {new Date(entry.start_date).toLocaleDateString()} – {new Date(entry.end_date).toLocaleDateString()}
+        </span>
+      </div>
+    </div>
+    <button
+      type="button"
+      onClick={() => onRemove(entry.schedule_id)}
+      className="flex-shrink-0 text-gray-300 hover:text-red-500 transition-colors mt-0.5"
+    >
+      <Trash2 className="w-4 h-4" />
+    </button>
+  </div>
+);
+
+// ─── Schedule Option Item (in the dropdown) ───────────────────────────────────
+
+const ScheduleOption: React.FC<{ s: ClassroomSchedule }> = ({ s }) => {
+  const isFull = s.enrolled_students.length >= (s.max_students ?? 40);
   return (
-    <div className="flex items-start gap-3 p-3 rounded-lg border border-gray-100 bg-gray-50 hover:bg-gray-100 transition-colors group">
-      <div className="flex-shrink-0 w-7 h-7 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs font-bold mt-0.5">
-        {index + 1}
-      </div>
-      <div className="flex-1 min-w-0 space-y-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-semibold text-gray-800">{s.subject_name}</span>
-          <Badge
-            variant="outline"
-            className={`text-[10px] px-1.5 py-0 font-semibold ${scheduleTypeColor[s.schedule_type]}`}
-          >
-            {s.schedule_type}
+    <div className="flex flex-col gap-0.5 py-0.5">
+      <div className="flex items-center gap-2">
+        <span className="font-medium text-sm">{s.subject_name}</span>
+        <Badge
+          variant="outline"
+          className={`text-[10px] px-1.5 py-0 font-semibold ${scheduleTypeColor[s.schedule_type as ScheduleType]}`}
+        >
+          {s.schedule_type}
+        </Badge>
+        <Badge
+          variant="outline"
+          className={`text-[10px] px-1.5 py-0 ${statusColor[s.status]}`}
+        >
+          {s.status}
+        </Badge>
+        {isFull && (
+          <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-red-100 text-red-600 border-red-200">
+            Full
           </Badge>
-        </div>
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1">
-            <BookOpen className="w-3 h-3" />{s.classroom_name}
-          </span>
-          <span className="flex items-center gap-1">
-            <Users className="w-3 h-3" />{s.instructor}
-          </span>
-          <span className="flex items-center gap-1">
-            <Clock className="w-3 h-3" />{s.time_start} – {s.time_end}
-          </span>
-          <span className="flex items-center gap-1">
-            <CalendarDays className="w-3 h-3" />
-            {SCHEDULE_LABELS[s.schedule_type]} · {new Date(s.start_date).toLocaleDateString()} – {new Date(s.end_date).toLocaleDateString()}
-          </span>
-        </div>
+        )}
       </div>
-      <button
-        type="button"
-        onClick={() => onRemove(s.id)}
-        className="flex-shrink-0 text-gray-300 hover:text-red-500 transition-colors mt-0.5"
-      >
-        <Trash2 className="w-4 h-4" />
-      </button>
+      <div className="flex flex-wrap gap-x-3 text-xs text-muted-foreground">
+        <span>{s.classroom_name}</span>
+        <span>{s.instructor}</span>
+        <span>{s.time_start} – {s.time_end}</span>
+        <span>{SCHEDULE_LABELS[s.schedule_type as ScheduleType]}</span>
+        <span className="text-gray-400">
+          {s.enrolled_students.length}/{s.max_students ?? 40} enrolled
+        </span>
+      </div>
     </div>
   );
 };
@@ -219,81 +194,154 @@ const EnrolledRow: React.FC<{
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 const StudentRegistration: React.FC = () => {
-  const [enrolledSubjects, setEnrolledSubjects] = useState<EnrolledEntry[]>([]);
-  const [selectedSubjectId, setSelectedSubjectId] = useState<string>("");
+  // Firestore schedules
+  const [availableSchedules, setAvailableSchedules] = useState<ClassroomSchedule[]>([]);
+  const [schedulesLoading,   setSchedulesLoading]   = useState(true);
+  const [schedulesError,     setSchedulesError]     = useState("");
+
+  // Form
+  const [enrolledEntries,   setEnrolledEntries]   = useState<EnrolledEntry[]>([]);
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string>("");
+  const [submitting,         setSubmitting]         = useState(false);
+  const [submitError,        setSubmitError]        = useState("");
+  const [submitSuccess,      setSubmitSuccess]      = useState(false);
+
+  // Subscribe to Firestore schedules in real time
+  useEffect(() => {
+    setSchedulesLoading(true);
+    try {
+      const unsub = subscribeToSchedules((data) => {
+        setAvailableSchedules(data);
+        setSchedulesLoading(false);
+      });
+      return () => unsub();
+    } catch {
+      setSchedulesError("Failed to load schedules. Check your connection.");
+      setSchedulesLoading(false);
+    }
+  }, []);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      student_id: "",
-      full_name: "",
-      email: "",
-      contact: "",
-      address: "",
-      birthdate: "",
-      year_level: "",
-      section: "",
-      gender: "",
-      guardian_name: "",
-      guardian_contact: "",
+      student_id: "", full_name: "", email: "", contact: "",
+      address: "", birthdate: "", year_level: "", section: "",
+      gender: "", guardian_name: "", guardian_contact: "",
     },
   });
 
-  const watchedName  = form.watch("full_name");
-  const watchedId    = form.watch("student_id");
-  const watchedYear  = form.watch("year_level");
+  const watchedName = form.watch("full_name");
+  const watchedId   = form.watch("student_id");
+  const watchedYear = form.watch("year_level");
 
-  // Initials for avatar
   const initials = watchedName
-    .split(" ")
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((n) => n[0].toUpperCase())
-    .join("") || "ST";
+    .split(" ").filter(Boolean).slice(0, 2)
+    .map((n) => n[0].toUpperCase()).join("") || "ST";
 
-  // Already enrolled subject IDs
+  // IDs already enrolled
   const enrolledIds = useMemo(
-    () => new Set(enrolledSubjects.map((e) => e.subject.id)),
-    [enrolledSubjects]
+    () => new Set(enrolledEntries.map((e) => e.schedule_id)),
+    [enrolledEntries]
   );
 
-  // Available (not yet enrolled)
-  const availableToAdd = AVAILABLE_SUBJECTS.filter((s) => !enrolledIds.has(s.id));
+  // Schedules still available to pick (not enrolled, not full, not completed)
+  const availableToAdd = useMemo(
+    () =>
+      availableSchedules.filter(
+        (s) =>
+          !enrolledIds.has(s.id) &&
+          s.status !== "Completed" &&
+          s.enrolled_students.length < (s.max_students ?? 40)
+      ),
+    [availableSchedules, enrolledIds]
+  );
+
+  // ── Handlers ────────────────────────────────────────────────────────────────
 
   const handleAddSubject = () => {
-    if (!selectedSubjectId) return;
-    const subject = AVAILABLE_SUBJECTS.find((s) => s.id === Number(selectedSubjectId));
-    if (!subject) return;
-    setEnrolledSubjects((prev) => [...prev, { subject }]);
-    setSelectedSubjectId("");
+    if (!selectedScheduleId) return;
+    const s = availableSchedules.find((s) => s.id === selectedScheduleId);
+    if (!s) return;
+    setEnrolledEntries((prev) => [
+      ...prev,
+      {
+        schedule_id:    s.id,
+        subject_name:   s.subject_name,
+        classroom_name: s.classroom_name,
+        instructor:     s.instructor,
+        schedule_type:  s.schedule_type as ScheduleType,
+        start_date:     s.start_date,
+        end_date:       s.end_date,
+        time_start:     s.time_start,
+        time_end:       s.time_end,
+      },
+    ]);
+    setSelectedScheduleId("");
   };
 
-  const handleRemoveSubject = (id: number) => {
-    setEnrolledSubjects((prev) => prev.filter((e) => e.subject.id !== id));
+  const handleRemoveSubject = (scheduleId: string) => {
+    setEnrolledEntries((prev) => prev.filter((e) => e.schedule_id !== scheduleId));
   };
 
-  const onSubmit = (values: FormValues) => {
-    if (enrolledSubjects.length === 0) {
-      alert("Please enroll in at least one subject.");
+  const handleReset = () => {
+    form.reset();
+    setEnrolledEntries([]);
+    setSelectedScheduleId("");
+    setSubmitError("");
+    setSubmitSuccess(false);
+  };
+
+  const onSubmit = async (values: FormValues) => {
+    if (enrolledEntries.length === 0) {
+      setSubmitError("Please enroll in at least one subject.");
       return;
     }
-    console.log("Student Registration:", {
-      ...values,
-      enrolled_subjects: enrolledSubjects.map((e) => e.subject.id),
-    });
-    alert(`Student "${values.full_name}" registered successfully with ${enrolledSubjects.length} subject(s)!`);
-    form.reset();
-    setEnrolledSubjects([]);
-    setSelectedSubjectId("");
+    setSubmitting(true);
+    setSubmitError("");
+    setSubmitSuccess(false);
+
+    try {
+      const enrolled_subjects: EnrolledSubject[] = enrolledEntries.map((e) => ({
+        ...e,
+        enrolled_at: new Date(),
+      }));
+
+      await registerStudent({
+        ...values,
+        enrolled_subjects,
+      });
+
+      setSubmitSuccess(true);
+      handleReset();
+    } catch (err: any) {
+      setSubmitError(err.message ?? "Registration failed. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  // ── Render ──────────────────────────────────────────────────────────────────
+  // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
     <div className="p-4 space-y-4">
+      {/* Success banner */}
+      {submitSuccess && (
+        <div className="flex items-center gap-2 bg-green-50 border border-green-200 text-green-700 rounded-md px-4 py-3 text-sm">
+          <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+          Student registered successfully and saved to Firestore!
+        </div>
+      )}
+
+      {/* Error banner */}
+      {submitError && (
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-600 rounded-md px-4 py-3 text-sm">
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          {submitError}
+        </div>
+      )}
+
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
             {/* ── LEFT: Main form ── */}
@@ -338,9 +386,7 @@ const StudentRegistration: React.FC = () => {
                         <FormLabel>Gender</FormLabel>
                         <Select onValueChange={field.onChange} value={field.value}>
                           <FormControl>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select gender" />
-                            </SelectTrigger>
+                            <SelectTrigger><SelectValue placeholder="Select gender" /></SelectTrigger>
                           </FormControl>
                           <SelectContent>
                             <SelectItem value="Male">Male</SelectItem>
@@ -417,9 +463,7 @@ const StudentRegistration: React.FC = () => {
                         <FormLabel>Year Level</FormLabel>
                         <Select onValueChange={field.onChange} value={field.value}>
                           <FormControl>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select year level" />
-                            </SelectTrigger>
+                            <SelectTrigger><SelectValue placeholder="Select year level" /></SelectTrigger>
                           </FormControl>
                           <SelectContent>
                             <SelectGroup>
@@ -440,9 +484,7 @@ const StudentRegistration: React.FC = () => {
                         <FormLabel>Section</FormLabel>
                         <Select onValueChange={field.onChange} value={field.value}>
                           <FormControl>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select section" />
-                            </SelectTrigger>
+                            <SelectTrigger><SelectValue placeholder="Select section" /></SelectTrigger>
                           </FormControl>
                           <SelectContent>
                             <SelectGroup>
@@ -490,43 +532,62 @@ const StudentRegistration: React.FC = () => {
                   <CardTitle className="text-base font-semibold flex items-center gap-2">
                     <BookOpen className="w-4 h-4 text-blue-500" />
                     Subject Enrollment
-                    {enrolledSubjects.length > 0 && (
+                    {enrolledEntries.length > 0 && (
                       <Badge className="bg-blue-100 text-blue-700 border-blue-200 text-xs font-semibold ml-1" variant="outline">
-                        {enrolledSubjects.length} enrolled
+                        {enrolledEntries.length} enrolled
                       </Badge>
                     )}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
 
-                  {/* Add subject row */}
+                  {/* Schedule picker */}
                   <div className="flex gap-2">
                     <div className="flex-1">
-                      <Select value={selectedSubjectId} onValueChange={setSelectedSubjectId}>
-                        <SelectTrigger>
-                          <SelectValue placeholder={availableToAdd.length === 0 ? "All subjects enrolled" : "Select a subject & schedule to add"} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectGroup>
-                            <SelectLabel>Available Subjects</SelectLabel>
-                            {availableToAdd.map((s) => (
-                              <SelectItem key={s.id} value={String(s.id)}>
-                                <div className="flex flex-col">
-                                  <span className="font-medium">{s.subject_name}</span>
-                                  <span className="text-xs text-muted-foreground">
-                                    {s.schedule_type} · {s.classroom_name} · {s.time_start}–{s.time_end} · {s.instructor}
-                                  </span>
-                                </div>
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
+                      {schedulesLoading ? (
+                        <div className="flex items-center gap-2 h-10 px-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-muted-foreground">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Loading available schedules...
+                        </div>
+                      ) : schedulesError ? (
+                        <div className="flex items-center gap-2 h-10 px-3 rounded-md border border-red-200 bg-red-50 text-sm text-red-600">
+                          <WifiOff className="w-3.5 h-3.5" />
+                          {schedulesError}
+                        </div>
+                      ) : (
+                        <Select
+                          value={selectedScheduleId}
+                          onValueChange={setSelectedScheduleId}
+                          disabled={availableToAdd.length === 0}
+                        >
+                          <SelectTrigger>
+                            <SelectValue
+                              placeholder={
+                                availableToAdd.length === 0
+                                  ? "No available schedules to add"
+                                  : `${availableToAdd.length} schedule${availableToAdd.length !== 1 ? "s" : ""} available — select to enroll`
+                              }
+                            />
+                          </SelectTrigger>
+                          <SelectContent className="max-h-72">
+                            <SelectGroup>
+                              <SelectLabel className="text-xs text-muted-foreground">
+                                Available Schedules ({availableToAdd.length})
+                              </SelectLabel>
+                              {availableToAdd.map((s) => (
+                                <SelectItem key={s.id} value={s.id}>
+                                  <ScheduleOption s={s} />
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                      )}
                     </div>
                     <Button
                       type="button"
                       onClick={handleAddSubject}
-                      disabled={!selectedSubjectId}
+                      disabled={!selectedScheduleId || schedulesLoading}
                       className="bg-blue-500 hover:bg-blue-600 text-white flex-shrink-0"
                     >
                       <PlusCircle className="w-4 h-4 mr-1.5" />
@@ -535,17 +596,17 @@ const StudentRegistration: React.FC = () => {
                   </div>
 
                   {/* Enrolled list */}
-                  {enrolledSubjects.length === 0 ? (
+                  {enrolledEntries.length === 0 ? (
                     <div className="py-8 text-center border-2 border-dashed border-gray-200 rounded-lg">
                       <BookOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
                       <p className="text-sm text-muted-foreground">No subjects enrolled yet.</p>
-                      <p className="text-xs text-muted-foreground">Select a subject above and click Add.</p>
+                      <p className="text-xs text-muted-foreground">Select a schedule above and click Add.</p>
                     </div>
                   ) : (
                     <div className="space-y-2">
-                      {enrolledSubjects.map((entry, i) => (
+                      {enrolledEntries.map((entry, i) => (
                         <EnrolledRow
-                          key={entry.subject.id}
+                          key={entry.schedule_id}
                           entry={entry}
                           index={i}
                           onRemove={handleRemoveSubject}
@@ -554,13 +615,11 @@ const StudentRegistration: React.FC = () => {
                     </div>
                   )}
 
-                  {/* Summary */}
-                  {enrolledSubjects.length > 0 && (
+                  {enrolledEntries.length > 0 && (
                     <div className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
                       <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
                       <span>
-                        {enrolledSubjects.length} subject{enrolledSubjects.length !== 1 ? "s" : ""} · 
-                        {" "}{enrolledSubjects.reduce((acc) => acc + 1, 0) * 1.5} units (est.)
+                        {enrolledEntries.length} subject{enrolledEntries.length !== 1 ? "s" : ""} selected
                       </span>
                     </div>
                   )}
@@ -569,15 +628,19 @@ const StudentRegistration: React.FC = () => {
 
               {/* Submit */}
               <div className="flex justify-end gap-3">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => { form.reset(); setEnrolledSubjects([]); setSelectedSubjectId(""); }}
-                >
+                <Button type="button" variant="outline" onClick={handleReset} disabled={submitting}>
                   Reset
                 </Button>
-                <Button type="submit" className="bg-blue-500 hover:bg-blue-600 text-white px-8">
-                  Register Student
+                <Button
+                  type="submit"
+                  className="bg-blue-500 hover:bg-blue-600 text-white px-8"
+                  disabled={submitting}
+                >
+                  {submitting ? (
+                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Registering...</>
+                  ) : (
+                    "Register Student"
+                  )}
                 </Button>
               </div>
             </div>
@@ -592,7 +655,6 @@ const StudentRegistration: React.FC = () => {
                         {initials}
                       </AvatarFallback>
                     </Avatar>
-
                     <div>
                       <h3 className="font-semibold text-gray-800 text-sm leading-tight">
                         {watchedName || "Student Name"}
@@ -601,7 +663,6 @@ const StudentRegistration: React.FC = () => {
                         {watchedId || "Student ID"}
                       </p>
                     </div>
-
                     <Badge className="bg-blue-50 text-blue-700 border-blue-200 text-xs" variant="outline">
                       {watchedYear || "Year Level"}
                     </Badge>
@@ -610,20 +671,24 @@ const StudentRegistration: React.FC = () => {
                   <Separator className="my-4" />
 
                   <div className="space-y-2 text-xs">
-                    <p className="font-semibold text-gray-600 uppercase tracking-wide text-[10px]">Enrollment Summary</p>
-
-                    {enrolledSubjects.length === 0 ? (
+                    <p className="font-semibold text-gray-600 uppercase tracking-wide text-[10px]">
+                      Enrollment Summary
+                    </p>
+                    {enrolledEntries.length === 0 ? (
                       <p className="text-muted-foreground text-center py-2">No subjects yet</p>
                     ) : (
                       <div className="space-y-2">
-                        {enrolledSubjects.map((e) => (
-                          <div key={e.subject.id} className="flex items-start justify-between gap-2">
-                            <span className="text-gray-700 font-medium leading-tight">{e.subject.subject_name}</span>
+                        {enrolledEntries.map((e) => (
+                          <div key={e.schedule_id} className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-gray-700 font-medium leading-tight truncate">{e.subject_name}</p>
+                              <p className="text-[10px] text-muted-foreground truncate">{e.classroom_name} · {e.time_start}–{e.time_end}</p>
+                            </div>
                             <Badge
                               variant="outline"
-                              className={`text-[10px] px-1.5 py-0 flex-shrink-0 ${scheduleTypeColor[e.subject.schedule_type]}`}
+                              className={`text-[10px] px-1.5 py-0 flex-shrink-0 ${scheduleTypeColor[e.schedule_type]}`}
                             >
-                              {e.subject.schedule_type}
+                              {e.schedule_type}
                             </Badge>
                           </div>
                         ))}
@@ -631,15 +696,26 @@ const StudentRegistration: React.FC = () => {
                     )}
                   </div>
 
-                  {enrolledSubjects.length > 0 && (
+                  {enrolledEntries.length > 0 && (
                     <>
                       <Separator className="my-3" />
                       <div className="flex items-center justify-between text-xs">
                         <span className="text-muted-foreground">Total Subjects</span>
-                        <span className="font-bold text-blue-600">{enrolledSubjects.length}</span>
+                        <span className="font-bold text-blue-600">{enrolledEntries.length}</span>
                       </div>
                     </>
                   )}
+
+                  {/* Live schedule counter from Firestore */}
+                  <Separator className="my-3" />
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">Available Schedules</span>
+                    {schedulesLoading ? (
+                      <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                    ) : (
+                      <span className="font-bold text-green-600">{availableToAdd.length}</span>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             </div>

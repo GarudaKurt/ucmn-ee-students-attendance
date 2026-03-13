@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Card,
   CardTitle,
@@ -19,7 +19,6 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  Legend,
 } from "recharts";
 import {
   GraduationCap,
@@ -30,15 +29,38 @@ import {
   TrendingUp,
   CheckCircle2,
   AlertCircle,
+  Loader2,
+  Radio,
 } from "lucide-react";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ── Firestore services ────────────────────────────────────────────────────────
+import {
+  subscribeToStudents,
+  subscribeToSchedules,
+} from "@/app/services/scheduleService"; // exports ClassroomSchedule + subscribeToSchedules
+
+import {
+  subscribeToStudents as subStudents,
+} from "@/app/services/studentService";   // exports Student + subscribeToStudents
+
+import {
+  subscribeToAttendance,
+  AttendanceRecord,
+} from "@/app/services/attendaceService";
+
+// ─── NOTE: adjust the two import paths above if your service files export
+//     these from a different location. The key exports needed are:
+//       subscribeToSchedules(cb)  →  ClassroomSchedule[]
+//       subscribeToStudents(cb)   →  Student[]
+//       subscribeToAttendance(cb) →  AttendanceRecord[]
+
+// ─── Types (re-declared locally so the file is self-contained) ────────────────
 
 type ScheduleType = "MWF" | "TTH" | "FS";
 
-type ClassroomSchedule = {
-  id: number;
-  subject_id: string;
+interface ClassroomSchedule {
+  id?: string;
+  subject_id?: string;
   subject_name: string;
   classroom_name: string;
   instructor: string;
@@ -47,18 +69,32 @@ type ClassroomSchedule = {
   end_date: string;
   time_start: string;
   time_end: string;
-  enrolled_count: number;
+  enrolled_students?: any[];
+  max_students?: number;
   status: "Active" | "Upcoming" | "Completed";
-};
+}
 
-type RecentStudent = {
-  id: number;
+interface EnrolledSubject {
+  schedule_id: string;
+  subject_name: string;
+  classroom_name: string;
+  instructor: string;
+  schedule_type: ScheduleType;
+  time_start: string;
+  time_end: string;
+  enrolled_at: string;
+}
+
+interface Student {
+  id?: string;
   student_id: string;
   full_name: string;
   year_level: string;
-  status: "Active" | "Inactive";
-  enrolled_subjects: string[];
-};
+  section: string;
+  status?: "Active" | "Inactive";
+  enrolled_subjects: EnrolledSubject[];
+  created_at?: any;
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -82,25 +118,7 @@ const SCHEDULE_LABELS: Record<ScheduleType, string> = {
 
 const PIE_COLORS = ["#3b82f6", "#f59e0b", "#10b981", "#8b5cf6", "#f43f5e"];
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
-
-const MOCK_SCHEDULES: ClassroomSchedule[] = [
-  { id: 1, subject_id: "MATH101", subject_name: "Mathematics",      classroom_name: "Room 101", instructor: "Mr. Santos",    schedule_type: "MWF", start_date: "2026-03-01", end_date: "2026-06-01", time_start: "08:00", time_end: "10:00", enrolled_count: 28, status: "Active" },
-  { id: 2, subject_id: "SCI101",  subject_name: "Science",          classroom_name: "Room 202", instructor: "Ms. Reyes",     schedule_type: "TTH", start_date: "2026-03-01", end_date: "2026-06-15", time_start: "10:30", time_end: "12:00", enrolled_count: 24, status: "Active" },
-  { id: 3, subject_id: "CS101",   subject_name: "Computer Science", classroom_name: "Lab A",    instructor: "Mr. Cruz",      schedule_type: "MWF", start_date: "2026-03-15", end_date: "2026-07-01", time_start: "13:00", time_end: "15:00", enrolled_count: 20, status: "Upcoming" },
-  { id: 4, subject_id: "FIL101",  subject_name: "Filipino",         classroom_name: "Room 305", instructor: "Ms. Garcia",    schedule_type: "FS",  start_date: "2026-03-01", end_date: "2026-05-30", time_start: "09:00", time_end: "11:00", enrolled_count: 30, status: "Active" },
-  { id: 5, subject_id: "ENG101",  subject_name: "English",          classroom_name: "Room 110", instructor: "Ms. Lim",       schedule_type: "TTH", start_date: "2026-03-05", end_date: "2026-06-05", time_start: "14:00", time_end: "16:00", enrolled_count: 26, status: "Active" },
-  { id: 6, subject_id: "HIS101",  subject_name: "History",          classroom_name: "Room 208", instructor: "Mr. Dela Cruz", schedule_type: "MWF", start_date: "2026-03-01", end_date: "2026-06-01", time_start: "11:00", time_end: "12:30", enrolled_count: 18, status: "Completed" },
-];
-
-const MOCK_RECENT_STUDENTS: RecentStudent[] = [
-  { id: 1, student_id: "2026-00001", full_name: "Santos, Juan Miguel",  year_level: "2nd Year", status: "Active",   enrolled_subjects: ["MATH101", "CS101"] },
-  { id: 2, student_id: "2026-00002", full_name: "Reyes, Maria Clara",   year_level: "1st Year", status: "Active",   enrolled_subjects: ["SCI101", "ENG101", "FIL101"] },
-  { id: 3, student_id: "2026-00003", full_name: "Cruz, Paolo Andre",    year_level: "3rd Year", status: "Active",   enrolled_subjects: ["HIS101", "MATH101"] },
-  { id: 4, student_id: "2026-00004", full_name: "Garcia, Ana Liza",     year_level: "4th Year", status: "Inactive", enrolled_subjects: ["CS101"] },
-  { id: 5, student_id: "2026-00005", full_name: "Lim, Kevin James",     year_level: "2nd Year", status: "Active",   enrolled_subjects: ["SCI101", "FIL101"] },
-  { id: 6, student_id: "2026-00006", full_name: "Dela Cruz, Anna Mae",  year_level: "1st Year", status: "Active",   enrolled_subjects: ["MATH101", "ENG101"] },
-];
+const todayISO = () => new Date().toISOString().split("T")[0];
 
 // ─── Stat Card ────────────────────────────────────────────────────────────────
 
@@ -110,57 +128,139 @@ const StatCard: React.FC<{
   sub: string;
   icon: React.ReactNode;
   color: string;
-}> = ({ title, value, sub, icon, color }) => (
+  loading?: boolean;
+}> = ({ title, value, sub, icon, color, loading }) => (
   <Card className={`w-full border-0 shadow-sm ${color}`}>
     <CardContent className="pt-5 pb-4">
       <div className="flex items-start justify-between">
         <div className="space-y-1">
           <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{title}</p>
-          <p className="text-3xl font-bold text-gray-800">{value}</p>
+          {loading ? (
+            <div className="h-8 flex items-center">
+              <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+            </div>
+          ) : (
+            <p className="text-3xl font-bold text-gray-800">{value}</p>
+          )}
           <p className="text-xs text-gray-500">{sub}</p>
         </div>
-        <div className="p-2 rounded-lg bg-white/60">
-          {icon}
-        </div>
+        <div className="p-2 rounded-lg bg-white/60">{icon}</div>
       </div>
     </CardContent>
   </Card>
 );
 
+// ─── Attendance Status Badge ──────────────────────────────────────────────────
+
+const AttBadge: React.FC<{ status: string }> = ({ status }) => {
+  const cls: Record<string, string> = {
+    Present: "bg-green-100 text-green-700 border-green-200",
+    Late:    "bg-yellow-100 text-yellow-700 border-yellow-200",
+    Absent:  "bg-red-100 text-red-600 border-red-200",
+  };
+  return (
+    <Badge variant="outline" className={`text-[10px] px-1.5 py-0 ${cls[status] ?? "bg-gray-100 text-gray-400"}`}>
+      {status}
+    </Badge>
+  );
+};
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 const Home: React.FC = () => {
 
-  // ── Derived stats ─────────────────────────────────────────────────────────
+  // ── Firestore live state ──────────────────────────────────────────────────
+  const [schedules,  setSchedules]  = useState<ClassroomSchedule[]>([]);
+  const [students,   setStudents]   = useState<Student[]>([]);
+  const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
 
-  const totalSchedules   = MOCK_SCHEDULES.length;
-  const activeSchedules  = MOCK_SCHEDULES.filter((s) => s.status === "Active").length;
-  const totalStudents    = MOCK_RECENT_STUDENTS.length;
-  const activeStudents   = MOCK_RECENT_STUDENTS.filter((s) => s.status === "Active").length;
-  const totalEnrollments = MOCK_RECENT_STUDENTS.reduce((acc, s) => acc + s.enrolled_subjects.length, 0);
+  const [loadingSch, setLoadingSch] = useState(true);
+  const [loadingStu, setLoadingStu] = useState(true);
+  const [loadingAtt, setLoadingAtt] = useState(true);
 
-  // Enrollment by subject (for bar chart)
-  const enrollmentBySubject = MOCK_SCHEDULES.map((s) => ({
-    name: s.subject_id,
-    fullName: s.subject_name,
-    enrolled: s.enrolled_count,
-  }));
+  const loading = loadingSch || loadingStu || loadingAtt;
 
-  // Schedule type distribution (for pie chart)
-  const scheduleTypeDist = useMemo(() => {
-    const counts: Record<string, number> = { MWF: 0, TTH: 0, FS: 0 };
-    MOCK_SCHEDULES.forEach((s) => counts[s.schedule_type]++);
-    return Object.entries(counts).map(([name, value]) => ({ name, value }));
+  useEffect(() => {
+    // subscribe to all three collections in parallel
+    const unsubSch = subscribeToSchedules((d) => { setSchedules(d);  setLoadingSch(false); });
+    const unsubStu = subStudents((d)           => { setStudents(d);   setLoadingStu(false); });
+    const unsubAtt = subscribeToAttendance((d) => { setAttendance(d); setLoadingAtt(false); });
+    return () => { unsubSch(); unsubStu(); unsubAtt(); };
   }, []);
 
-  // Year level distribution (for pie)
+  // ── Derived stats ─────────────────────────────────────────────────────────
+
+  const totalSchedules  = schedules.length;
+  const activeSchedules = schedules.filter((s) => s.status === "Active").length;
+  const totalStudents   = students.length;
+  const activeStudents  = students.filter((s) => (s.status ?? "Active") === "Active").length;
+
+  const totalEnrollments = students.reduce(
+    (acc, s) => acc + (s.enrolled_subjects?.length ?? 0), 0
+  );
+
+  const avgPerSubject = totalSchedules > 0
+    ? (totalEnrollments / totalSchedules).toFixed(1)
+    : "0.0";
+
+  // Today's attendance summary
+  const today = todayISO();
+  const todayRecords  = attendance.filter((r) => r.date === today);
+  const todayPresent  = todayRecords.filter((r) => r.status === "Present").length;
+  const todayLate     = todayRecords.filter((r) => r.status === "Late").length;
+  const todayAbsent   = todayRecords.filter((r) => r.status === "Absent").length;
+
+  // ── Chart data ────────────────────────────────────────────────────────────
+
+  // Enrollment per schedule (bar chart)
+  const enrollmentBySubject = useMemo(() =>
+    schedules.map((s) => ({
+      name:     s.subject_name.length > 10 ? s.subject_name.slice(0, 10) + "…" : s.subject_name,
+      fullName: s.subject_name,
+      enrolled: s.enrolled_students?.length ?? 0,
+    })),
+  [schedules]);
+
+  // Schedule type distribution (donut)
+  const scheduleTypeDist = useMemo(() => {
+    const counts: Record<string, number> = { MWF: 0, TTH: 0, FS: 0 };
+    schedules.forEach((s) => counts[s.schedule_type]++);
+    return Object.entries(counts)
+      .filter(([, v]) => v > 0)
+      .map(([name, value]) => ({ name, value }));
+  }, [schedules]);
+
+  // Year level distribution (donut)
   const yearDist = useMemo(() => {
     const counts: Record<string, number> = {};
-    MOCK_RECENT_STUDENTS.forEach((s) => {
+    students.forEach((s) => {
       counts[s.year_level] = (counts[s.year_level] ?? 0) + 1;
     });
     return Object.entries(counts).map(([name, value]) => ({ name, value }));
-  }, []);
+  }, [students]);
+
+  // Today's attendance by subject (bar)
+  const attendanceBySubject = useMemo(() => {
+    const map: Record<string, { present: number; late: number; absent: number }> = {};
+    todayRecords.forEach((r) => {
+      if (!map[r.subject_name]) map[r.subject_name] = { present: 0, late: 0, absent: 0 };
+      if (r.status === "Present") map[r.subject_name].present++;
+      else if (r.status === "Late") map[r.subject_name].late++;
+      else map[r.subject_name].absent++;
+    });
+    return Object.entries(map).map(([name, v]) => ({ name, ...v }));
+  }, [todayRecords]);
+
+  // 5 most recently registered students
+  const recentStudents = useMemo(() =>
+    [...students]
+      .sort((a, b) => {
+        const ta = a.created_at?.toMillis?.() ?? 0;
+        const tb = b.created_at?.toMillis?.() ?? 0;
+        return tb - ta;
+      })
+      .slice(0, 6),
+  [students]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -168,12 +268,22 @@ const Home: React.FC = () => {
     <div className="w-full px-4 py-6 space-y-6">
 
       {/* ── Page header ── */}
-      <div>
-        <h1 className="text-xl font-bold text-gray-800">Dashboard</h1>
-        <p className="text-sm text-muted-foreground">Overview of classroom schedules and student enrollments</p>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h1 className="text-xl font-bold text-gray-800">Dashboard</h1>
+          <p className="text-sm text-muted-foreground">
+            Overview of classroom schedules, students, and today's attendance
+          </p>
+        </div>
+        {loading && (
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            Syncing Firestore…
+          </div>
+        )}
       </div>
 
-      {/* ── Stat Cards ── */}
+      {/* ── Row 1: Stat Cards ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           title="Total Students"
@@ -181,6 +291,7 @@ const Home: React.FC = () => {
           sub={`${activeStudents} active`}
           icon={<GraduationCap className="w-5 h-5 text-blue-500" />}
           color="bg-blue-50"
+          loading={loadingStu}
         />
         <StatCard
           title="Schedules"
@@ -188,6 +299,7 @@ const Home: React.FC = () => {
           sub={`${activeSchedules} active classes`}
           icon={<CalendarDays className="w-5 h-5 text-amber-500" />}
           color="bg-amber-50"
+          loading={loadingSch}
         />
         <StatCard
           title="Total Enrollments"
@@ -195,48 +307,102 @@ const Home: React.FC = () => {
           sub="across all subjects"
           icon={<BookOpen className="w-5 h-5 text-emerald-500" />}
           color="bg-emerald-50"
+          loading={loadingStu}
         />
         <StatCard
           title="Avg. per Subject"
-          value={(totalEnrollments / totalSchedules).toFixed(1)}
+          value={avgPerSubject}
           sub="students per class"
           icon={<TrendingUp className="w-5 h-5 text-purple-500" />}
           color="bg-purple-50"
+          loading={loading}
         />
       </div>
 
-      {/* ── Row 2: Charts ── */}
+      {/* ── Row 2: Today's Attendance Summary ── */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <Card className="border-0 shadow-sm bg-green-50">
+          <CardContent className="pt-4 pb-4 flex items-center gap-3">
+            <CheckCircle2 className="w-8 h-8 text-green-500 flex-shrink-0" />
+            <div>
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Present Today</p>
+              {loadingAtt
+                ? <Loader2 className="w-5 h-5 animate-spin text-gray-400 mt-1" />
+                : <p className="text-3xl font-bold text-gray-800">{todayPresent}</p>}
+              <p className="text-xs text-gray-500">{today}</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-0 shadow-sm bg-yellow-50">
+          <CardContent className="pt-4 pb-4 flex items-center gap-3">
+            <Clock className="w-8 h-8 text-yellow-500 flex-shrink-0" />
+            <div>
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Late Today</p>
+              {loadingAtt
+                ? <Loader2 className="w-5 h-5 animate-spin text-gray-400 mt-1" />
+                : <p className="text-3xl font-bold text-gray-800">{todayLate}</p>}
+              <p className="text-xs text-gray-500">{todayRecords.length} total taps</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-0 shadow-sm bg-red-50">
+          <CardContent className="pt-4 pb-4 flex items-center gap-3">
+            <AlertCircle className="w-8 h-8 text-red-400 flex-shrink-0" />
+            <div>
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Absent Today</p>
+              {loadingAtt
+                ? <Loader2 className="w-5 h-5 animate-spin text-gray-400 mt-1" />
+                : <p className="text-3xl font-bold text-gray-800">{todayAbsent}</p>}
+              <p className="text-xs text-gray-500">logged absences</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Row 3: Charts ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-        {/* Enrollment by Subject — Bar Chart */}
+        {/* Enrollment by Subject — Bar */}
         <Card className="lg:col-span-2">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <Users className="w-4 h-4 text-blue-500" />
               Enrollment by Subject
             </CardTitle>
-            <CardDescription className="text-xs">Number of students per subject</CardDescription>
+            <CardDescription className="text-xs">Students enrolled per schedule</CardDescription>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={enrollmentBySubject} margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
-                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip
-                  formatter={(value, _, props) => [value, props.payload.fullName]}
-                  contentStyle={{ fontSize: 12, borderRadius: 8 }}
-                />
-                <Bar dataKey="enrolled" radius={[4, 4, 0, 0]}>
-                  {enrollmentBySubject.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            {loadingSch ? (
+              <div className="flex items-center justify-center h-[200px]">
+                <Loader2 className="w-6 h-6 animate-spin text-gray-300" />
+              </div>
+            ) : enrollmentBySubject.length === 0 ? (
+              <div className="flex items-center justify-center h-[200px] text-xs text-muted-foreground">
+                No schedules found
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={enrollmentBySubject} margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
+                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip
+                    formatter={(value, _, props) => [value, props.payload.fullName]}
+                    contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                  />
+                  <Bar dataKey="enrolled" radius={[4, 4, 0, 0]}>
+                    {enrollmentBySubject.map((_, i) => (
+                      <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
 
-        {/* Schedule Type Breakdown — Pie */}
+        {/* Schedule Type Donut */}
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
@@ -246,39 +412,79 @@ const Home: React.FC = () => {
             <CardDescription className="text-xs">MWF · TTH · FS distribution</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col items-center">
-            <PieChart width={180} height={160}>
-              <Pie
-                data={scheduleTypeDist}
-                dataKey="value"
-                nameKey="name"
-                cx="50%"
-                cy="50%"
-                outerRadius={65}
-                innerRadius={35}
-                paddingAngle={3}
-              >
-                {scheduleTypeDist.map((_, i) => (
-                  <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
-            </PieChart>
-            <div className="flex gap-3 mt-1">
-              {scheduleTypeDist.map((entry, i) => (
-                <div key={entry.name} className="flex items-center gap-1 text-xs">
-                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                  {entry.name}: <span className="font-semibold">{entry.value}</span>
+            {loadingSch ? (
+              <div className="flex items-center justify-center h-[160px]">
+                <Loader2 className="w-6 h-6 animate-spin text-gray-300" />
+              </div>
+            ) : (
+              <>
+                <PieChart width={180} height={160}>
+                  <Pie
+                    data={scheduleTypeDist}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={65}
+                    innerRadius={35}
+                    paddingAngle={3}
+                  >
+                    {scheduleTypeDist.map((_, i) => (
+                      <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                </PieChart>
+                <div className="flex gap-3 mt-1 flex-wrap justify-center">
+                  {scheduleTypeDist.map((entry, i) => (
+                    <div key={entry.name} className="flex items-center gap-1 text-xs">
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                      {entry.name}: <span className="font-semibold">{entry.value}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>
 
-      {/* ── Row 3: Active Schedules + Recent Students ── */}
+      {/* ── Row 4: Today's Attendance by Subject ── */}
+      {(todayRecords.length > 0 || loadingAtt) && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <Radio className="w-4 h-4 text-blue-400" />
+              Today's Attendance by Subject
+              <span className="text-[10px] font-mono text-muted-foreground font-normal">{today}</span>
+            </CardTitle>
+            <CardDescription className="text-xs">Present · Late · Absent per subject</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {loadingAtt ? (
+              <div className="flex items-center justify-center h-[180px]">
+                <Loader2 className="w-6 h-6 animate-spin text-gray-300" />
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={180}>
+                <BarChart data={attendanceBySubject} margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
+                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                  <Bar dataKey="present" name="Present" stackId="a" fill="#10b981" radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="late"    name="Late"    stackId="a" fill="#f59e0b" />
+                  <Bar dataKey="absent"  name="Absent"  stackId="a" fill="#f43f5e" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Row 5: Schedules + Students ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
-        {/* Active Classroom Schedules */}
+        {/* Classroom Schedules list */}
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
@@ -288,46 +494,53 @@ const Home: React.FC = () => {
             <CardDescription className="text-xs">All active and upcoming classes</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
-            {MOCK_SCHEDULES.map((sched) => (
-              <div
-                key={sched.id}
-                className="flex items-start justify-between gap-3 p-3 rounded-lg border border-gray-100 hover:bg-gray-50 transition-colors"
-              >
-                <div className="flex-1 min-w-0 space-y-0.5">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-semibold text-gray-800 truncate">{sched.subject_name}</span>
-                    <span className="text-[10px] font-mono text-muted-foreground">{sched.subject_id}</span>
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs text-muted-foreground">{sched.classroom_name}</span>
-                    <span className="text-xs text-muted-foreground">·</span>
-                    <span className="text-xs text-muted-foreground">{sched.instructor}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                    <Clock className="w-3 h-3" />
-                    {sched.time_start} – {sched.time_end} · {SCHEDULE_LABELS[sched.schedule_type]}
-                  </div>
-                </div>
-                <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-                  <Badge variant="outline" className={`text-[10px] px-1.5 py-0 ${statusColor[sched.status]}`}>
-                    {sched.status}
-                  </Badge>
-                  <Badge variant="outline" className={`text-[10px] px-1.5 py-0 font-semibold ${scheduleTypeColor[sched.schedule_type]}`}>
-                    {sched.schedule_type}
-                  </Badge>
-                  <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                    <Users className="w-3 h-3" />{sched.enrolled_count}
-                  </span>
-                </div>
+            {loadingSch ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="w-5 h-5 animate-spin text-gray-300" />
               </div>
-            ))}
+            ) : schedules.length === 0 ? (
+              <p className="text-xs text-muted-foreground text-center py-8">No schedules found.</p>
+            ) : (
+              schedules.map((sched, idx) => (
+                <div
+                  key={sched.id ?? idx}
+                  className="flex items-start justify-between gap-3 p-3 rounded-lg border border-gray-100 hover:bg-gray-50 transition-colors"
+                >
+                  <div className="flex-1 min-w-0 space-y-0.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-semibold text-gray-800 truncate">{sched.subject_name}</span>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs text-muted-foreground">{sched.classroom_name}</span>
+                      <span className="text-xs text-muted-foreground">·</span>
+                      <span className="text-xs text-muted-foreground">{sched.instructor}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                      <Clock className="w-3 h-3" />
+                      {sched.time_start} – {sched.time_end} · {SCHEDULE_LABELS[sched.schedule_type]}
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                    <Badge variant="outline" className={`text-[10px] px-1.5 py-0 ${statusColor[sched.status]}`}>
+                      {sched.status}
+                    </Badge>
+                    <Badge variant="outline" className={`text-[10px] px-1.5 py-0 font-semibold ${scheduleTypeColor[sched.schedule_type]}`}>
+                      {sched.schedule_type}
+                    </Badge>
+                    <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                      <Users className="w-3 h-3" />{sched.enrolled_students?.length ?? 0}
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
           </CardContent>
         </Card>
 
-        {/* Recent Students */}
+        {/* Right column: year dist + recent students */}
         <div className="space-y-4">
 
-          {/* Year level pie + student list */}
+          {/* Year level donut */}
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-semibold flex items-center gap-2">
@@ -337,38 +550,46 @@ const Home: React.FC = () => {
               <CardDescription className="text-xs">Enrollment distribution</CardDescription>
             </CardHeader>
             <CardContent className="flex items-center gap-4">
-              <PieChart width={130} height={130}>
-                <Pie
-                  data={yearDist}
-                  dataKey="value"
-                  nameKey="name"
-                  cx="50%"
-                  cy="50%"
-                  outerRadius={55}
-                  innerRadius={28}
-                  paddingAngle={3}
-                >
-                  {yearDist.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8 }} />
-              </PieChart>
-              <div className="space-y-1.5 flex-1">
-                {yearDist.map((entry, i) => (
-                  <div key={entry.name} className="flex items-center justify-between text-xs">
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                      <span className="text-gray-600">{entry.name}</span>
-                    </div>
-                    <span className="font-semibold text-gray-800">{entry.value}</span>
+              {loadingStu ? (
+                <div className="flex justify-center w-full py-6">
+                  <Loader2 className="w-5 h-5 animate-spin text-gray-300" />
+                </div>
+              ) : (
+                <>
+                  <PieChart width={130} height={130}>
+                    <Pie
+                      data={yearDist}
+                      dataKey="value"
+                      nameKey="name"
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={55}
+                      innerRadius={28}
+                      paddingAngle={3}
+                    >
+                      {yearDist.map((_, i) => (
+                        <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8 }} />
+                  </PieChart>
+                  <div className="space-y-1.5 flex-1">
+                    {yearDist.map((entry, i) => (
+                      <div key={entry.name} className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                          <span className="text-gray-600">{entry.name}</span>
+                        </div>
+                        <span className="font-semibold text-gray-800">{entry.value}</span>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </>
+              )}
             </CardContent>
           </Card>
 
-          {/* Recent enrolled students list */}
+          {/* Recently registered students */}
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-semibold flex items-center gap-2">
@@ -377,36 +598,56 @@ const Home: React.FC = () => {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              {MOCK_RECENT_STUDENTS.map((student) => (
-                <div
-                  key={student.id}
-                  className="flex items-center justify-between gap-2 py-1.5 border-b border-gray-100 last:border-0"
-                >
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-gray-800 truncate">{student.full_name}</p>
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <span className="font-mono">{student.student_id}</span>
-                      <span>·</span>
-                      <span>{student.year_level}</span>
-                    </div>
-                  </div>
-                  <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                    <div className="flex items-center gap-1">
-                      {student.status === "Active" ? (
-                        <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
-                      ) : (
-                        <AlertCircle className="w-3.5 h-3.5 text-gray-400" />
-                      )}
-                      <span className={`text-[10px] font-medium ${student.status === "Active" ? "text-green-600" : "text-gray-400"}`}>
-                        {student.status}
-                      </span>
-                    </div>
-                    <span className="text-[10px] text-muted-foreground">
-                      {student.enrolled_subjects.length} subject{student.enrolled_subjects.length !== 1 ? "s" : ""}
-                    </span>
-                  </div>
+              {loadingStu ? (
+                <div className="flex justify-center py-6">
+                  <Loader2 className="w-5 h-5 animate-spin text-gray-300" />
                 </div>
-              ))}
+              ) : recentStudents.length === 0 ? (
+                <p className="text-xs text-muted-foreground text-center py-6">No students registered yet.</p>
+              ) : (
+                recentStudents.map((student) => {
+                  // find today's attendance records for this student
+                  const todayAtt = todayRecords.filter(
+                    (r) => r.student_doc_id === student.id
+                  );
+
+                  return (
+                    <div
+                      key={student.id}
+                      className="flex items-center justify-between gap-2 py-1.5 border-b border-gray-100 last:border-0"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-gray-800 truncate">{student.full_name}</p>
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <span className="font-mono">{student.student_id}</span>
+                          <span>·</span>
+                          <span>{student.year_level}</span>
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                        <div className="flex items-center gap-1">
+                          {(student.status ?? "Active") === "Active" ? (
+                            <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+                          ) : (
+                            <AlertCircle className="w-3.5 h-3.5 text-gray-400" />
+                          )}
+                          <span className={`text-[10px] font-medium ${(student.status ?? "Active") === "Active" ? "text-green-600" : "text-gray-400"}`}>
+                            {student.status ?? "Active"}
+                          </span>
+                        </div>
+                        {/* Show today's attendance status if available */}
+                        {todayAtt.length > 0 ? (
+                          <AttBadge status={todayAtt[0].status} />
+                        ) : (
+                          <span className="text-[10px] text-muted-foreground">
+                            {student.enrolled_subjects?.length ?? 0} subject{(student.enrolled_subjects?.length ?? 0) !== 1 ? "s" : ""}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </CardContent>
           </Card>
         </div>

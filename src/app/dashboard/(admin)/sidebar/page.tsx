@@ -1,13 +1,6 @@
 "use client";
 
-import {
-  Calendar,
-  Home,
-  Search,
-  User2,
-  LogOut,
-} from "lucide-react";
-
+import { Calendar, Home, Search, User2, LogOut } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -19,18 +12,24 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import Link from "next/link";
-import { useAuth } from "@/app/context/useAuth";
+import { useRouter } from "next/navigation";
+import { signOut } from "firebase/auth";
+import { auth } from "@/../../firebase/configFirebase";
+
+const navItems = [
+  { title: "Dashboard",          url: "/dashboard/home",        icon: Home },
+  { title: "Classroom Schedule", url: "/dashboard/schedules",   icon: Calendar },
+  { title: "Attendance",         url: "/dashboard/information", icon: Search },
+  { title: "Enroll Students",    url: "/dashboard/users",       icon: User2 },
+];
 
 const AppSidebar = () => {
-  const { signOut } = useAuth();
+  const router = useRouter();
 
-  const items = [
-    { title: "Dashboard",           url: "/dashboard/home",        icon: Home },
-    { title: "Classroom Schedule",  url: "/dashboard/schedules",   icon: Calendar },
-    { title: "Attendance",          url: "/dashboard/information", icon: Search },
-    { title: "Enroll Students",     url: "/dashboard/users",       icon: User2 },
-    { title: "Logout", icon: LogOut, onClick: signOut },
-  ] as const;
+  const handleLogout = async () => {
+    await signOut(auth);
+    router.push("/signin");
+  };
 
   return (
     <Sidebar className="w-60 min-h-screen border-r border-[#2C2C2C]">
@@ -41,30 +40,32 @@ const AppSidebar = () => {
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {items.map((item) => (
+              {navItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
-                  {"onClick" in item && item.onClick ? (
-                    <button
-                      type="button"
-                      onClick={item.onClick}
-                      className="flex items-center gap-3 w-full px-4 py-2 text-sm text-red-500 hover:bg-red-50 hover:text-red-600 rounded-md transition-colors"
+                  <SidebarMenuButton asChild>
+                    <Link
+                      prefetch={true}
+                      href={item.url}
+                      className="flex items-center gap-3 w-full px-4 py-2 text-sm text-white hover:bg-gray-100 hover:text-black rounded-md transition-colors"
                     >
                       <item.icon className="w-4 h-4 shrink-0" />
                       <span>{item.title}</span>
-                    </button>
-                  ) : (
-                    <SidebarMenuButton asChild>
-                      <Link
-                        href={"url" in item ? item.url : "#"}
-                        className="flex items-center gap-3 w-full px-4 py-2 text-sm text-white hover:bg-gray-100 rounded-md transition-colors"
-                      >
-                        <item.icon className="w-4 h-4 shrink-0" />
-                        <span>{item.title}</span>
-                      </Link>
-                    </SidebarMenuButton>
-                  )}
+                    </Link>
+                  </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
+
+              {/* Logout */}
+              <SidebarMenuItem>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="flex items-center gap-3 w-full px-4 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white rounded-md transition-colors"
+                >
+                  <LogOut className="w-4 h-4 shrink-0" />
+                  <span>Logout</span>
+                </button>
+              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
