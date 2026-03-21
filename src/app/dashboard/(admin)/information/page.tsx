@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect, useRef } from "react";
 import {
-  Table, TableBody, TableCaption, TableCell,
+  Table, TableBody, TableCell,
   TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
@@ -33,18 +33,24 @@ import { database } from "@/../firebase/configFirebase";
 
 // ── Firestore service ─────────────────────────────────────────────────────────
 import {
-  Student, AttendanceRecord, EnrolledSubject, ScheduleType,
-  subscribeToStudents, subscribeToAttendance,
-  updateStudent, deleteStudentDoc,
-  getLatestPerSubject, computeStatus,
-  logAttendance, updateAttendance,
+  Student,
+  AttendanceRecord,
+  TimeLog,
+  EnrolledSubject,
+  ScheduleType,
+  subscribeToStudents,
+  subscribeToAttendance,
+  updateStudent,
+  deleteStudentDoc,
+  computeStatus,
+  logAttendance,
+  updateTimeIn,
+  updateTimeOut,
+  buildLogsByDate,
+  summariseLogs,
 } from "@/app/services/attendaceService";
 
 // ─── RTDB path ────────────────────────────────────────────────────────────────
-// Expected node shape at "monitoring":
-//   { studentId: 2909423, timeIn: "10:40", timeOut: "11:15" }
-//
-// studentId can be a raw RFID number OR a formatted string — both are handled.
 const RTDB_PATH = "monitoring";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -84,91 +90,71 @@ interface SensorPayload {
 
 type SensorStatus = "idle" | "processing" | "ok" | "error" | "no_match";
 
+type SubjectOption = {
+  schedule_id: string; subject_name: string; classroom_name: string;
+  schedule_type: ScheduleType; time_start: string; time_end: string;
+};
+
+/**
+ * One rendered row = one student × one enrolled subject.
+ * `todayLog` is the TimeLog entry for today from that student's attendance doc,
+ * or null if they haven't been scanned yet today.
+ * `attDocId` is the Firestore attendance doc ID (needed for update calls).
+ */
 type FlatRow = {
   student:   Student;
   subject:   EnrolledSubject;
-  latestAtt: AttendanceRecord | null;
+  todayLog:  TimeLog | null;
+  attDocId:  string | null;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Convert any RTDB time value → "HH:mm" string or null */
 function toHHMM(raw: string | number | null | undefined): string | null {
   if (raw === null || raw === undefined || raw === "") return null;
-  if (typeof raw === "string") return raw.slice(0, 5);
+  if (typeof raw === "string") {
+    // Zero-pad both parts so "9:34" → "09:34" and "09:34" stays "09:34"
+    const [h, m] = raw.slice(0, 5).split(":");
+    return `${(h ?? "0").padStart(2, "0")}:${(m ?? "00").padStart(2, "0")}`;
+  }
   const d = new Date(raw);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-/** Today as "YYYY-MM-DD" */
 const todayISO = () => new Date().toISOString().split("T")[0];
 
-/**
- * Flexible student ID match.
- *
- * The RFID chip sends a raw decimal number (e.g. 2909423).
- * Firestore stores a formatted ID (e.g. "2024-00001") OR possibly the same number.
- * We try three strategies in order:
- *   1. Exact string match          "2909423" === "2909423"
- *   2. Numeric digits-only match   strip non-digits from both sides and compare
- *   3. Stored ID ends with sensor  "2024-2909423" ends with "2909423" (suffix)
- */
 function matchStudentId(stored: string, sensorRaw: string | number): boolean {
   const sensor  = String(sensorRaw).trim();
   const storedS = String(stored).trim();
-
   if (storedS === sensor) return true;
-
   const storedDigits = storedS.replace(/\D/g, "");
   const sensorDigits = sensor.replace(/\D/g, "");
   if (storedDigits && sensorDigits && storedDigits === sensorDigits) return true;
-
   if (storedS.endsWith(sensor)) return true;
-
   return false;
 }
 
-/**
- * Returns true if a subject's schedule runs TODAY and now is within a
- * 30-min grace window (before start → after end).
- *
- * MWF → Mon(1) Wed(3) Fri(5)
- * TTH → Tue(2) Thu(4)
- * FS  → Fri(5) Sat(6)
- */
 function isScheduleActiveNow(subject: EnrolledSubject): boolean {
   const now       = new Date();
   const dayOfWeek = now.getDay();
-
   const validDays: Record<ScheduleType, number[]> = {
-    MWF: [1, 3, 5],
-    TTH: [2, 4],
-    FS:  [5, 6],
+    MWF: [1, 3, 5], TTH: [2, 4], FS: [5, 6],
   };
   if (!validDays[subject.schedule_type]?.includes(dayOfWeek)) return false;
-
   const parseTime = (hhmm: string): Date => {
     const [h, m] = hhmm.split(":").map(Number);
-    const d = new Date();
-    d.setHours(h, m, 0, 0);
-    return d;
+    const d = new Date(); d.setHours(h, m, 0, 0); return d;
   };
-
-  const GRACE_MS    = 30 * 60 * 1000;
-  const classStart  = parseTime(subject.time_start);
-  const classEnd    = parseTime(subject.time_end);
-  const windowOpen  = new Date(classStart.getTime() - GRACE_MS);
-  const windowClose = new Date(classEnd.getTime()   + GRACE_MS);
-
+  const GRACE_MS   = 30 * 60 * 1000;
+  const windowOpen  = new Date(parseTime(subject.time_start).getTime() - GRACE_MS);
+  const windowClose = new Date(parseTime(subject.time_end).getTime()   + GRACE_MS);
   return now >= windowOpen && now <= windowClose;
 }
 
 // ─── Sensor Status Banner ─────────────────────────────────────────────────────
 
 const SensorBanner: React.FC<{
-  status: SensorStatus;
-  message: string;
-  raw: SensorPayload | null;
+  status: SensorStatus; message: string; raw: SensorPayload | null;
 }> = ({ status, message, raw }) => {
   const ring: Record<SensorStatus, string> = {
     idle:       "border-gray-200   bg-gray-50",
@@ -294,6 +280,7 @@ const EditDialog: React.FC<{
 };
 
 // ─── Attendance History Dialog ────────────────────────────────────────────────
+// Now reads from time_logs[] inside each AttendanceRecord.
 
 const AttendanceHistoryDialog: React.FC<{
   open: boolean; student: Student | null; scheduleId: string | null;
@@ -301,12 +288,33 @@ const AttendanceHistoryDialog: React.FC<{
 }> = ({ open, student, scheduleId, allRecords, onClose }) => {
   if (!student) return null;
 
-  const records = allRecords
-    .filter((r) => r.student_doc_id === student.id)
-    .filter((r) => !scheduleId || r.schedule_id === scheduleId)
+  // Find attendance docs for this student (optionally filtered by schedule)
+  const studentDocs = allRecords.filter(
+    (r) =>
+      r.student_doc_id === student.id &&
+      (!scheduleId || r.schedule_id === scheduleId)
+  );
+
+  // Flatten all time_logs from each attendance doc into a single sorted list
+  type FlatLog = TimeLog & {
+    subject_name: string; classroom_name: string; schedule_type: ScheduleType;
+  };
+
+  const flatLogs: FlatLog[] = studentDocs
+    .flatMap((doc) =>
+      doc.time_logs.map((log) => ({
+        ...log,
+        subject_name:   doc.subject_name,
+        classroom_name: doc.classroom_name,
+        schedule_type:  doc.schedule_type,
+      }))
+    )
     .sort((a, b) => b.date.localeCompare(a.date));
 
-  const subjectLabel = scheduleId ? records[0]?.subject_name ?? scheduleId : null;
+  const subjectLabel = scheduleId ? studentDocs[0]?.subject_name ?? scheduleId : null;
+
+  // Summary stats across all flattened logs
+  const summary = summariseLogs(flatLogs);
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -320,7 +328,26 @@ const AttendanceHistoryDialog: React.FC<{
             {subjectLabel && <span> · {subjectLabel}</span>}
           </DialogDescription>
         </DialogHeader>
-        {records.length === 0 ? (
+
+        {/* Summary pills */}
+        {flatLogs.length > 0 && (
+          <div className="flex gap-2 flex-wrap text-xs font-medium pb-2 border-b border-gray-100">
+            <span className="flex items-center gap-1 text-gray-500">
+              <Users className="w-3.5 h-3.5" />{summary.total} sessions
+            </span>
+            <span className="bg-green-100 text-green-700 border border-green-200 px-2 py-0.5 rounded-full">
+              {summary.present} present
+            </span>
+            <span className="bg-yellow-100 text-yellow-700 border border-yellow-200 px-2 py-0.5 rounded-full">
+              {summary.late} late
+            </span>
+            <span className="bg-red-100 text-red-600 border border-red-200 px-2 py-0.5 rounded-full">
+              {summary.absent} absent
+            </span>
+          </div>
+        )}
+
+        {flatLogs.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-8">No attendance records found.</p>
         ) : (
           <Table>
@@ -335,32 +362,36 @@ const AttendanceHistoryDialog: React.FC<{
               </TableRow>
             </TableHeader>
             <TableBody>
-              {records.map((rec) => (
-                <TableRow key={rec.id}>
+              {flatLogs.map((log, i) => (
+                <TableRow key={`${log.date}-${i}`}>
                   <TableCell className="text-xs">
-                    {new Date(rec.date).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })}
+                    {new Date(log.date).toLocaleDateString("en-PH", {
+                      month: "short", day: "numeric", year: "numeric",
+                    })}
                   </TableCell>
                   <TableCell className="text-xs font-medium">
-                    <p>{rec.subject_name}</p>
-                    <p className="text-[10px] text-muted-foreground">{rec.classroom_name}</p>
+                    <p>{log.subject_name}</p>
+                    <p className="text-[10px] text-muted-foreground">{log.classroom_name}</p>
                   </TableCell>
                   <TableCell>
-                    <Badge variant="outline" className={`text-[10px] px-1.5 py-0 ${scheduleTypeColor[rec.schedule_type]}`}>
-                      {rec.schedule_type}
+                    <Badge variant="outline" className={`text-[10px] px-1.5 py-0 ${scheduleTypeColor[log.schedule_type]}`}>
+                      {log.schedule_type}
                     </Badge>
                   </TableCell>
                   <TableCell className="text-xs font-mono">
-                    {rec.time_in
-                      ? <span className="text-green-700 bg-green-50 px-1.5 py-0.5 rounded border border-green-200">{rec.time_in}</span>
+                    {log.time_in
+                      ? <span className="text-green-700 bg-green-50 px-1.5 py-0.5 rounded border border-green-200">{log.time_in}</span>
                       : "—"}
                   </TableCell>
                   <TableCell className="text-xs font-mono">
-                    {rec.time_out
-                      ? <span className="text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">{rec.time_out}</span>
+                    {log.time_out
+                      ? <span className="text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">{log.time_out}</span>
                       : "—"}
                   </TableCell>
                   <TableCell>
-                    <Badge variant="outline" className={`text-[10px] ${statusAttColor[rec.status]}`}>{rec.status}</Badge>
+                    <Badge variant="outline" className={`text-[10px] ${statusAttColor[log.status]}`}>
+                      {log.status}
+                    </Badge>
                   </TableCell>
                 </TableRow>
               ))}
@@ -390,21 +421,16 @@ const AttendanceMonitoring: React.FC = () => {
 
   const loading = loadingS || loadingA;
 
-  // ── Refs so the RTDB callback always sees the freshest Firestore data ─────
+  // Refs so the RTDB callback always sees the freshest Firestore data
   const studentsRef   = useRef<Student[]>([]);
   const attendanceRef = useRef<AttendanceRecord[]>([]);
   useEffect(() => { studentsRef.current   = students;   }, [students]);
   useEffect(() => { attendanceRef.current = attendance; }, [attendance]);
 
-  // ── Real-time sensor state ────────────────────────────────────────────────
+  // ── Sensor state ──────────────────────────────────────────────────────────
   const [sensorStatus,  setSensorStatus]  = useState<SensorStatus>("idle");
   const [sensorMessage, setSensorMessage] = useState("Waiting for sensor…");
   const [sensorRaw,     setSensorRaw]     = useState<SensorPayload | null>(null);
-
-  /**
-   * activeStudentDocId — the Firestore doc id of the student whose rows should
-   * be highlighted right now. Cleared 4 seconds after a successful scan.
-   */
   const [activeStudentDocId, setActiveStudentDocId] = useState<string | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -424,75 +450,89 @@ const AttendanceMonitoring: React.FC = () => {
       const timeOut = toHHMM(payload.timeOut);
       const today   = todayISO();
 
-      // 1 ── Match student using flexible ID comparison ──────────────────────
+      // 1 ── Match student ───────────────────────────────────────────────────
       const student = studentsRef.current.find(
         (s) => matchStudentId(s.student_id, payload.studentId)
       );
 
       if (!student) {
         setSensorStatus("no_match");
-        setSensorMessage(
-          `No student found for RFID: ${payload.studentId}. ` +
-          `Check that the student_id in Firestore matches this RFID number.`
-        );
+        setSensorMessage(`No student found for RFID: ${payload.studentId}.`);
         return;
       }
 
-      // 2 ── Filter to subjects that are running right now ───────────────────
+      // 2 ── Filter to subjects active right now ─────────────────────────────
       const activeSubjects = student.enrolled_subjects.filter(isScheduleActiveNow);
 
       if (activeSubjects.length === 0) {
         setSensorStatus("no_match");
         setSensorMessage(`${student.full_name} — no class scheduled right now`);
-        // Still highlight the student rows so staff can see who tapped
         setActiveStudentDocId(student.id ?? null);
         scheduleHighlightClear();
         return;
       }
 
-      // 3 ── Upsert attendance in Firestore ─────────────────────────────────
+      // 3 ── Upsert attendance using the new time_logs API ───────────────────
       try {
         for (const subject of activeSubjects) {
-          const existing = attendanceRef.current.find(
+          // Find the attendance doc for this student + schedule (one doc total)
+          const attDoc = attendanceRef.current.find(
             (r) =>
               r.student_doc_id === student.id &&
-              r.schedule_id    === subject.schedule_id &&
-              r.date           === today
+              r.schedule_id    === subject.schedule_id
           );
 
-          if (!existing) {
-            // No record yet today → create one
-            const status = timeIn ? computeStatus(timeIn, subject.time_start) : "Absent";
+          if (!attDoc) {
+            // ── No doc yet → create with first TimeLog ──────────────────────
             await logAttendance({
-            student_doc_id: student.id!,
-            student_id:     student.student_id,
-            student_name:   student.full_name,
-            schedule_id:    subject.schedule_id,
-            subject_name:   subject.subject_name,
-            classroom_name: subject.classroom_name,
-            schedule_type:  subject.schedule_type,
-            time_start:     subject.time_start,
-            time_end:       subject.time_end,
-            date:           today,
-            day_of_week:    new Date().toLocaleDateString("en-US", { weekday: "long" }), // ← NEW
-            time_in:        timeIn,
-            time_out:       timeOut,
-          });
+              student_doc_id: student.id!,
+              student_id:     student.student_id,
+              student_name:   student.full_name,
+              schedule_id:    subject.schedule_id,
+              date:           today,
+              time_in:        timeIn,
+            });
+
           } else {
-            // Record exists → sensor is always the source of truth, overwrite with latest values
-            const updates: Partial<AttendanceRecord> = {};
+            // ── Doc exists → check if today's log is present ─────────────────
+            const logsMap   = buildLogsByDate(attDoc);
+            const todayLog  = logsMap.get(today);
 
-            // Always update if sensor provides a value (even if a value already exists)
-            if (timeIn  !== null) updates.time_in  = timeIn;
-            if (timeOut !== null) updates.time_out = timeOut;
+            if (!todayLog) {
+              // Today has no entry yet → append a new TimeLog via logAttendance
+              await logAttendance({
+                student_doc_id: student.id!,
+                student_id:     student.student_id,
+                student_name:   student.full_name,
+                schedule_id:    subject.schedule_id,
+                date:           today,
+                time_in:        timeIn,
+              });
 
-            // Recompute status from the latest time_in
-            const resolvedIn = timeIn ?? existing.time_in;
-            if (resolvedIn) {
-              updates.status = computeStatus(resolvedIn, subject.time_start);
+            } else {
+              // Today's log exists — sensor is always the source of truth.
+              // Normalise both values to "HH:mm" (zero-padded) before comparing
+              // so "9:34" === "09:34" and we don't skip real updates.
+              const pad = (t: string | null) =>
+                t ? t.split(":").map((p) => p.padStart(2, "0")).join(":") : null;
+
+              const normIn      = pad(timeIn);
+              const normOut     = pad(timeOut);
+              const storedIn    = pad(todayLog.time_in);
+              const storedOut   = pad(todayLog.time_out);
+
+              // Update time_out whenever the sensor sends one (new or changed)
+              if (normOut !== null && normOut !== storedOut) {
+                await updateTimeOut(attDoc.id!, today, normOut);
+              }
+
+              // Update time_in whenever sensor sends a different value
+              // (correction / re-scan). Do this AFTER time_out so a single
+              // RTDB write that carries both values applies both changes.
+              if (normIn !== null && normIn !== storedIn) {
+                await updateTimeIn(attDoc.id!, today, normIn);
+              }
             }
-
-            await updateAttendance(existing.id!, updates);
           }
         }
 
@@ -501,8 +541,6 @@ const AttendanceMonitoring: React.FC = () => {
         setSensorMessage(
           `✓ ${student.full_name}  ·  ${subjectNames}  ·  In: ${timeIn ?? "—"}  Out: ${timeOut ?? "—"}`
         );
-
-        // Highlight the matched student's rows in the table
         setActiveStudentDocId(student.id ?? null);
         scheduleHighlightClear();
 
@@ -517,12 +555,9 @@ const AttendanceMonitoring: React.FC = () => {
     return () => off(dbRef, "value", handleValue);
   }, []);
 
-  /** Clear the row highlight after 4 seconds */
   const scheduleHighlightClear = () => {
     if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-    highlightTimerRef.current = setTimeout(() => {
-      setActiveStudentDocId(null);
-    }, 4000);
+    highlightTimerRef.current = setTimeout(() => setActiveStudentDocId(null), 4000);
   };
 
   // ── Filters ───────────────────────────────────────────────────────────────
@@ -540,20 +575,15 @@ const AttendanceMonitoring: React.FC = () => {
   const [histSubjectId, setHistSubjectId] = useState<string | null>(null);
 
   // ── Subject options ───────────────────────────────────────────────────────
-  type SubjectOption = {
-    schedule_id: string; subject_name: string; classroom_name: string;
-    schedule_type: ScheduleType; time_start: string; time_end: string;
-  };
-
   const subjectOptions = useMemo<SubjectOption[]>(() => {
     const seen = new Map<string, SubjectOption>();
     for (const s of students) {
       for (const sub of s.enrolled_subjects) {
         if (!seen.has(sub.schedule_id)) {
           seen.set(sub.schedule_id, {
-            schedule_id: sub.schedule_id, subject_name: sub.subject_name,
-            classroom_name: sub.classroom_name, schedule_type: sub.schedule_type,
-            time_start: sub.time_start, time_end: sub.time_end,
+            schedule_id:    sub.schedule_id,   subject_name:   sub.subject_name,
+            classroom_name: sub.classroom_name, schedule_type:  sub.schedule_type,
+            time_start:     sub.time_start,     time_end:       sub.time_end,
           });
         }
       }
@@ -573,16 +603,26 @@ const AttendanceMonitoring: React.FC = () => {
   );
 
   // ── Attendance lookup ─────────────────────────────────────────────────────
-  const attendanceLookup = useMemo(() => {
-    const byStudent = new Map<string, AttendanceRecord[]>();
+  /**
+   * Build: studentDocId → scheduleId → today's TimeLog (or null).
+   * Uses buildLogsByDate() from the service to index by date within each doc.
+   */
+  const todayLogLookup = useMemo(() => {
+    const today = todayISO();
+    // outer key: studentDocId, inner key: scheduleId → { log, attDocId }
+    const map = new Map<string, Map<string, { log: TimeLog | null; attDocId: string }>>();
+
     for (const rec of attendance) {
-      const list = byStudent.get(rec.student_doc_id) ?? [];
-      list.push(rec);
-      byStudent.set(rec.student_doc_id, list);
+      let inner = map.get(rec.student_doc_id);
+      if (!inner) { inner = new Map(); map.set(rec.student_doc_id, inner); }
+
+      const logsMap = buildLogsByDate(rec);
+      inner.set(rec.schedule_id, {
+        log:      logsMap.get(today) ?? null,
+        attDocId: rec.id!,
+      });
     }
-    const result = new Map<string, Map<string, AttendanceRecord>>();
-    byStudent.forEach((recs, sid) => result.set(sid, getLatestPerSubject(recs)));
-    return result;
+    return map;
   }, [attendance]);
 
   // ── Flat rows ─────────────────────────────────────────────────────────────
@@ -598,24 +638,29 @@ const AttendanceMonitoring: React.FC = () => {
           if (!student.full_name.toLowerCase().includes(t) &&
               !student.student_id.toLowerCase().includes(t)) continue;
         }
-        const latestAtt = attendanceLookup.get(student.id ?? "")?.get(subject.schedule_id) ?? null;
-        rows.push({ student, subject, latestAtt });
+
+        const entry    = todayLogLookup.get(student.id ?? "")?.get(subject.schedule_id);
+        const todayLog = entry?.log      ?? null;
+        const attDocId = entry?.attDocId ?? null;
+
+        rows.push({ student, subject, todayLog, attDocId });
       }
     }
     return rows.sort((a, b) =>
       a.student.full_name.localeCompare(b.student.full_name) ||
       a.subject.subject_name.localeCompare(b.subject.subject_name)
     );
-  }, [students, attendanceLookup, filterScheduleId, filterClassroom, filterSchedType, searchTerm]);
+  }, [students, todayLogLookup, filterScheduleId, filterClassroom, filterSchedType, searchTerm]);
 
   const totalPages  = Math.max(1, Math.ceil(flatRows.length / ITEMS_PER_PAGE));
   const startIndex  = (currentPage - 1) * ITEMS_PER_PAGE;
   const currentData = flatRows.slice(startIndex, startIndex + ITEMS_PER_PAGE);
 
+  // Stats for the active subject banner (based on today's logs)
   const stats = useMemo(() => {
     if (filterScheduleId === "all") return null;
-    const present = flatRows.filter((r) => r.latestAtt?.status === "Present").length;
-    const late    = flatRows.filter((r) => r.latestAtt?.status === "Late").length;
+    const present = flatRows.filter((r) => r.todayLog?.status === "Present").length;
+    const late    = flatRows.filter((r) => r.todayLog?.status === "Late").length;
     const absent  = flatRows.length - present - late;
     return { total: flatRows.length, present, late, absent };
   }, [flatRows, filterScheduleId]);
@@ -631,7 +676,6 @@ const AttendanceMonitoring: React.FC = () => {
   return (
     <div className="w-full px-4 py-4 space-y-4">
 
-      {/* ── Sensor live status banner ── */}
       <SensorBanner status={sensorStatus} message={sensorMessage} raw={sensorRaw} />
 
       {/* ── Filters ── */}
@@ -652,7 +696,6 @@ const AttendanceMonitoring: React.FC = () => {
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-
             <div className="flex flex-col gap-1">
               <label className="text-xs font-medium text-muted-foreground">Subject / Schedule</label>
               <Select value={filterScheduleId} onValueChange={(v) => { setFilterScheduleId(v); setCurrentPage(1); }}>
@@ -753,7 +796,11 @@ const AttendanceMonitoring: React.FC = () => {
           {flatRows.length} row{flatRows.length !== 1 ? "s" : ""}
           {filterScheduleId !== "all" ? " (1 row = 1 student in this subject)" : " (1 row = 1 student × subject)"}
         </span>
-        {!hasFilter && <span className="text-[11px] italic">Each row shows a student's latest attendance per subject</span>}
+        {!hasFilter && (
+          <span className="text-[11px] italic">
+            Each row shows today's attendance log per student × subject
+          </span>
+        )}
       </div>
 
       {/* ── Table ── */}
@@ -797,10 +844,8 @@ const AttendanceMonitoring: React.FC = () => {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  currentData.map(({ student, subject, latestAtt }, idx) => {
-                    const attStatus  = latestAtt?.status ?? null;
-                    // Highlight this row if the sensor just scanned this student
-                    const isActive   = student.id === activeStudentDocId;
+                  currentData.map(({ student, subject, todayLog, attDocId }, idx) => {
+                    const isActive = student.id === activeStudentDocId;
 
                     return (
                       <TableRow
@@ -859,13 +904,13 @@ const AttendanceMonitoring: React.FC = () => {
                           <p className="text-[10px] text-muted-foreground mt-0.5">{subject.time_start}–{subject.time_end}</p>
                         </TableCell>
 
-                        {/* ── Date ── */}
+                        {/* ── Date — from today's TimeLog ── */}
                         <TableCell className="text-xs">
-                          {latestAtt ? (
+                          {todayLog ? (
                             <div className="flex items-center gap-1 text-gray-700">
                               <CalendarDays className="w-3 h-3 text-gray-400 flex-shrink-0" />
                               <span className="font-medium whitespace-nowrap">
-                                {new Date(latestAtt.date).toLocaleDateString("en-PH", {
+                                {new Date(todayLog.date).toLocaleDateString("en-PH", {
                                   month: "short", day: "numeric", year: "numeric",
                                 })}
                               </span>
@@ -877,12 +922,12 @@ const AttendanceMonitoring: React.FC = () => {
 
                         {/* ── Time In ── */}
                         <TableCell>
-                          {latestAtt?.time_in ? (
+                          {todayLog?.time_in ? (
                             <span className={`text-xs font-mono px-1.5 py-0.5 rounded border whitespace-nowrap
                               ${isActive
                                 ? "text-green-800 bg-green-100 border-green-400 font-semibold"
                                 : "text-green-700 bg-green-50 border-green-200"}`}>
-                              {latestAtt.time_in}
+                              {todayLog.time_in}
                             </span>
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
@@ -891,12 +936,12 @@ const AttendanceMonitoring: React.FC = () => {
 
                         {/* ── Time Out ── */}
                         <TableCell>
-                          {latestAtt?.time_out ? (
+                          {todayLog?.time_out ? (
                             <span className={`text-xs font-mono px-1.5 py-0.5 rounded border whitespace-nowrap
                               ${isActive
                                 ? "text-blue-800 bg-blue-100 border-blue-400 font-semibold"
                                 : "text-blue-700 bg-blue-50 border-blue-200"}`}>
-                              {latestAtt.time_out}
+                              {todayLog.time_out}
                             </span>
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
@@ -905,10 +950,14 @@ const AttendanceMonitoring: React.FC = () => {
 
                         {/* ── Att. Status ── */}
                         <TableCell>
-                          {attStatus ? (
-                            <Badge variant="outline" className={`text-[10px] ${statusAttColor[attStatus]}`}>{attStatus}</Badge>
+                          {todayLog ? (
+                            <Badge variant="outline" className={`text-[10px] ${statusAttColor[todayLog.status]}`}>
+                              {todayLog.status}
+                            </Badge>
                           ) : (
-                            <Badge variant="outline" className="text-[10px] bg-gray-100 text-gray-400 border-gray-200">No record</Badge>
+                            <Badge variant="outline" className="text-[10px] bg-gray-100 text-gray-400 border-gray-200">
+                              No record
+                            </Badge>
                           )}
                         </TableCell>
 
@@ -917,7 +966,11 @@ const AttendanceMonitoring: React.FC = () => {
                           <div className="flex items-center gap-2 justify-center">
                             <button
                               title="View attendance history"
-                              onClick={() => { setHistStudent(student); setHistSubjectId(subject.schedule_id); setHistOpen(true); }}
+                              onClick={() => {
+                                setHistStudent(student);
+                                setHistSubjectId(subject.schedule_id);
+                                setHistOpen(true);
+                              }}
                               className="text-gray-400 hover:text-blue-500 transition-colors"
                             >
                               <Clock className="w-4 h-4" />
@@ -941,7 +994,6 @@ const AttendanceMonitoring: React.FC = () => {
                             </button>
                           </div>
                         </TableCell>
-
                       </TableRow>
                     );
                   })
