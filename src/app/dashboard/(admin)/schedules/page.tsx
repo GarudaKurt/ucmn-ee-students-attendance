@@ -22,15 +22,17 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { useAuthState } from "react-firebase-hooks/auth";
 import { auth } from "@/../../firebase/configFirebase";
+// AFTER
 import {
   ClassroomSchedule,
+  SessionDate,          // ← added
   ScheduleType,
   createSchedule,
   subscribeToSchedules,
   enrollStudent,
   unenrollStudent,
-  deleteSchedule,
 } from "@/app/services/scheduleService";
+
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -51,6 +53,17 @@ const scheduleTypeColor: Record<ScheduleType, string> = {
   TTH: "bg-amber-100 text-amber-700 border-amber-200",
   FS:  "bg-teal-100 text-teal-700 border-teal-200",
 };
+
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function buildSessionArray(dates: Date[], timeStart: string, timeEnd: string): SessionDate[] {
+  return dates.map((d) => ({
+    date: d.toISOString().split("T")[0],
+    dayOfWeek: DAY_NAMES[d.getDay()],
+    time_start: timeStart,
+    time_end:   timeEnd,
+  }));
+}
 
 const statusColor: Record<string, string> = {
   Active:    "bg-green-100 text-green-700 border-green-200",
@@ -353,37 +366,54 @@ const formSessionPreview = useMemo(() => {
 }, [scheduleType, startDate, endDate]);
   // ── Handlers ──────────────────────────────────────────────────────────────
 
-  const handleSaveSchedule = async () => {
-    if (!classroomName || !subjectName || !instructor || !scheduleType || !startDate || !endDate || !timeStart || !timeEnd) {
-      alert("Please fill in all fields.");
-      return;
-    }
-    setSaving(true);
-    try {
-      await createSchedule({
-        classroom_name: classroomName,
-        subject_name:   subjectName,
-        instructor,
-        schedule_type:  scheduleType as ScheduleType,
-        start_date:     startDate.toISOString().split("T")[0],
-        end_date:       endDate.toISOString().split("T")[0],
-        time_start:     timeStart,
-        time_end:       timeEnd,
-        status:         "Upcoming",
-        max_students:   parseInt(maxStudents, 10) || 40,
-      });
-      setIsSheetOpen(false);
-      // Reset form
-      setClassroomName(""); setSubjectName(""); setInstructor("");
-      setScheduleType(""); setStartDate(undefined); setEndDate(undefined);
-      setTimeStart(""); setTimeEnd(""); setMaxStudents("40");
-    } catch (err: any) {
-      alert("Failed to save schedule: " + err.message);
-    } finally {
-      setSaving(false);
-    }
-  };
+const handleSaveSchedule = async () => {
+  if (
+    !classroomName || !subjectName || !instructor ||
+    !scheduleType  || !startDate   || !endDate    ||
+    !timeStart     || !timeEnd
+  ) {
+    alert("Please fill in all fields.");
+    return;
+  }
 
+  if (formSessionPreview.length === 0) {
+    alert("No sessions generated for the selected date range and schedule type.");
+    return;
+  }
+
+  setSaving(true);
+  try {
+    const sessions = buildSessionArray(formSessionPreview, timeStart, timeEnd);
+
+    // Derive start/end from actual session dates (first & last)
+    const derivedStartDate = sessions[0].date;
+    const derivedEndDate   = sessions[sessions.length - 1].date;
+
+    await createSchedule({
+      classroom_name: classroomName,
+      subject_name:   subjectName,
+      instructor,
+      schedule_type:  scheduleType as ScheduleType,
+      start_date:     derivedStartDate,   // ← from first session
+      end_date:       derivedEndDate,     // ← from last session
+      time_start:     timeStart,
+      time_end:       timeEnd,
+      status:         "Upcoming",
+      max_students:   parseInt(maxStudents, 10) || 40,
+      sessions,                           // ← full array stored in Firestore
+    });
+
+    setIsSheetOpen(false);
+    // Reset form
+    setClassroomName(""); setSubjectName(""); setInstructor("");
+    setScheduleType(""); setStartDate(undefined); setEndDate(undefined);
+    setTimeStart(""); setTimeEnd(""); setMaxStudents("40");
+  } catch (err: any) {
+    alert("Failed to save schedule: " + err.message);
+  } finally {
+    setSaving(false);
+  }
+};
   const handleEnroll = async (scheduleId: string) => {
     if (!user) {
       setEnrollError("You must be logged in to enroll.");

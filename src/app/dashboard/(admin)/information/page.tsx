@@ -464,19 +464,20 @@ const AttendanceMonitoring: React.FC = () => {
             // No record yet today → create one
             const status = timeIn ? computeStatus(timeIn, subject.time_start) : "Absent";
             await logAttendance({
-              student_doc_id: student.id!,
-              student_id:     student.student_id,
-              student_name:   student.full_name,
-              schedule_id:    subject.schedule_id,
-              subject_name:   subject.subject_name,
-              classroom_name: subject.classroom_name,
-              schedule_type:  subject.schedule_type,
-              time_start:     subject.time_start,
-              time_end:       subject.time_end,
-              date:           today,
-              time_in:        timeIn,
-              time_out:       timeOut,
-            });
+            student_doc_id: student.id!,
+            student_id:     student.student_id,
+            student_name:   student.full_name,
+            schedule_id:    subject.schedule_id,
+            subject_name:   subject.subject_name,
+            classroom_name: subject.classroom_name,
+            schedule_type:  subject.schedule_type,
+            time_start:     subject.time_start,
+            time_end:       subject.time_end,
+            date:           today,
+            day_of_week:    new Date().toLocaleDateString("en-US", { weekday: "long" }), // ← NEW
+            time_in:        timeIn,
+            time_out:       timeOut,
+          });
           } else {
             // Record exists → sensor is always the source of truth, overwrite with latest values
             const updates: Partial<AttendanceRecord> = {};

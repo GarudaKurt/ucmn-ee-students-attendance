@@ -29,19 +29,25 @@ export type EnrolledStudent = {
   enrolledAt: Timestamp | Date;
 };
 
+export type SessionDate = {
+  date: string;       // "YYYY-MM-DD"
+  dayOfWeek: string;  // e.g. "Monday"
+};
+
 export type ClassroomSchedule = {
-  id?: string; // Firestore document ID
+  id?: string;
   classroom_name: string;
   subject_name: string;
   instructor: string;
   schedule_type: ScheduleType;
-  start_date: string; // "YYYY-MM-DD"
-  end_date: string;   // "YYYY-MM-DD"
+  start_date: string;           // auto-derived from first session
+  end_date: string;             // auto-derived from last session
   time_start: string;
   time_end: string;
   status: "Active" | "Upcoming" | "Completed";
-  enrolled_students: EnrolledStudent[]; // <-- enrollment array
-  max_students?: number;               // optional cap
+  enrolled_students: EnrolledStudent[];
+  sessions: SessionDate[];      // ← NEW: full session array
+  max_students?: number;
   created_at?: Timestamp | Date;
   updated_at?: Timestamp | Date;
 };
@@ -61,7 +67,7 @@ export async function createSchedule(
 ): Promise<string> {
   const docRef = await addDoc(schedulesRef, {
     ...data,
-    enrolled_students: [],       // initialize empty
+    enrolled_students: [],
     max_students: data.max_students ?? 40,
     created_at: serverTimestamp(),
     updated_at: serverTimestamp(),
