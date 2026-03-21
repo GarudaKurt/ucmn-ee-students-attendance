@@ -28,7 +28,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 
 // ── Firebase Realtime Database ────────────────────────────────────────────────
-import { ref, onValue, off } from "firebase/database";
+import { ref, set, onValue, off } from "firebase/database";
 import { database } from "@/../firebase/configFirebase";
 
 // ── Firestore service ─────────────────────────────────────────────────────────
@@ -440,7 +440,7 @@ const AttendanceMonitoring: React.FC = () => {
 
     const handleValue = async (snapshot: any) => {
       const payload = snapshot.val() as SensorPayload | null;
-      if (!payload || payload.studentId === undefined || payload.studentId === null) return;
+      if (!payload || payload.studentId === undefined || payload.studentId === null || payload.studentId === "") return;
 
       setSensorRaw(payload);
       setSensorStatus("processing");
@@ -469,6 +469,12 @@ const AttendanceMonitoring: React.FC = () => {
         setSensorMessage(`${student.full_name} — no class scheduled right now`);
         setActiveStudentDocId(student.id ?? null);
         scheduleHighlightClear();
+
+        // Clear the RTDB node 1.5 s after a successful write so the
+        // sensor is ready for the next scan without leaving stale data.
+        setTimeout(() => {
+          set(dbRef, { studentId: "", timeIn: "", timeOut: "" });
+        }, 1500);
         return;
       }
 
@@ -543,6 +549,12 @@ const AttendanceMonitoring: React.FC = () => {
         );
         setActiveStudentDocId(student.id ?? null);
         scheduleHighlightClear();
+
+        // Clear the RTDB node 1.5 s after a successful write so the
+        // sensor is ready for the next scan without leaving stale data.
+        setTimeout(() => {
+          set(dbRef, { studentId: "", timeIn: "", timeOut: "" });
+        }, 1500);
 
       } catch (err: any) {
         console.error("[RTDB→Firestore]", err);
