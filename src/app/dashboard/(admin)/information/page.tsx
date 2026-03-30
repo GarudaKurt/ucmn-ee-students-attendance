@@ -497,6 +497,7 @@ const AttendanceMonitoring: React.FC = () => {
               schedule_id:    subject.schedule_id,
               date:           today,
               time_in:        timeIn,
+              time_out:       timeOut,
             });
 
           } else {
@@ -513,6 +514,7 @@ const AttendanceMonitoring: React.FC = () => {
                 schedule_id:    subject.schedule_id,
                 date:           today,
                 time_in:        timeIn,
+                time_out:       timeOut,
               });
 
             } else {

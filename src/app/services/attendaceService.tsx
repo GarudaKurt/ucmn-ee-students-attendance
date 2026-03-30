@@ -203,6 +203,7 @@ export async function logAttendance(data: {
   schedule_id: string;
   date: string;           // "YYYY-MM-DD"
   time_in: string | null; // null → marked Absent immediately
+  time_out: string | null;
 }): Promise<string> {
   // 1. Enrollment + schedule validation
   const schedule = await assertStudentEnrolled(data.schedule_id, data.student_doc_id);
@@ -214,7 +215,7 @@ export async function logAttendance(data: {
   const newLog: TimeLog = {
     date: data.date,
     time_in: data.time_in,
-    time_out: null,
+    time_out: data.time_out,
     status: computeStatus(data.time_in, schedule.time_start),
   };
 
