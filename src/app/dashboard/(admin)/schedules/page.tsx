@@ -617,10 +617,14 @@ const ClassroomSchedules: React.FC = () => {
     });
 
     // 2. Write to students.enrolled_subjects (new — makes attendance table work)
-    const schedule = schedules.find((s) => s.id === scheduleId);
-    if (schedule) {
-      await addEnrolledSubject(student.id!, schedule);
-    }
+const schedule = schedules.find((s) => s.id === scheduleId);
+if (schedule) {
+  await addEnrolledSubject(student.id!, {
+    ...schedule,
+    id:           schedule.id!,
+    max_students: schedule.max_students ?? 40,
+  });
+}
   }, [schedules]);
 
   /**
