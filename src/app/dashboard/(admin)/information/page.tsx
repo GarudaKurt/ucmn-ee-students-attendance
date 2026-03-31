@@ -42,10 +42,8 @@ import {
   subscribeToAttendance,
   updateStudent,
   deleteStudentDoc,
-  computeStatus,
   logAttendance,
-  updateTimeIn,
-  updateTimeOut,
+  updateTimeLog,
   buildLogsByDate,
   summariseLogs,
 } from "@/app/services/attendaceService";
@@ -518,27 +516,20 @@ const AttendanceMonitoring: React.FC = () => {
               });
 
             } else {
-              // Today's log exists — sensor is always the source of truth.
-              // Normalise both values to "HH:mm" (zero-padded) before comparing
-              // so "9:34" === "09:34" and we don't skip real updates.
-              const pad = (t: string | null) =>
+               const pad = (t: string | null) =>
                 t ? t.split(":").map((p) => p.padStart(2, "0")).join(":") : null;
 
-              const normIn      = pad(timeIn);
-              const normOut     = pad(timeOut);
-              const storedIn    = pad(todayLog.time_in);
-              const storedOut   = pad(todayLog.time_out);
+              const normIn    = pad(timeIn);
+              const normOut   = pad(timeOut);
+              const storedIn  = pad(todayLog.time_in);
+              const storedOut = pad(todayLog.time_out);
+              // Build a single patch — one read + one write, no race condition
+              const patch: { time_in?: string | null; time_out?: string | null } = {};
+              if (normIn  !== null && normIn  !== storedIn)  patch.time_in  = normIn;
+              if (normOut !== null && normOut !== storedOut)  patch.time_out = normOut;
 
-              // Update time_out whenever the sensor sends one (new or changed)
-              if (normOut !== null && normOut !== storedOut) {
-                await updateTimeOut(attDoc.id!, today, normOut);
-              }
-
-              // Update time_in whenever sensor sends a different value
-              // (correction / re-scan). Do this AFTER time_out so a single
-              // RTDB write that carries both values applies both changes.
-              if (normIn !== null && normIn !== storedIn) {
-                await updateTimeIn(attDoc.id!, today, normIn);
+              if (Object.keys(patch).length > 0) {
+                await updateTimeLog(attDoc.id!, today, patch);
               }
             }
           }

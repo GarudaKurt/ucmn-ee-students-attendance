@@ -10,7 +10,6 @@ import {
   serverTimestamp,
   query,
   where,
-  orderBy,
   arrayUnion,
   Timestamp,
 } from "firebase/firestore";
@@ -25,44 +24,25 @@ import {
 
 export type ScheduleType = "MWF" | "TTH" | "FS";
 
-/**
- * A single day's time log entry stored inside an attendance document.
- * One entry is appended per session/class day the student attends (or misses).
- */
 export type TimeLog = {
-  date: string;           // "YYYY-MM-DD" — the session date
-  time_in: string | null; // actual clock-in  e.g. "08:03", null if absent
-  time_out: string | null;// actual clock-out e.g. "10:00", null if not yet out
+  date: string;
+  time_in: string | null;
+  time_out: string | null;
   status: "Present" | "Absent" | "Late";
 };
 
-/**
- * One attendance document per student per schedule (subject).
- * All daily time logs are stored as an array inside this single document.
- */
 export type AttendanceRecord = {
   id?: string;
-
-  // ── Student identifiers ──────────────────────────────────────────────────
-  student_doc_id: string;   // Firestore doc ID of the student
-  student_id: string;       // e.g. "2026-00001"
+  student_doc_id: string;
+  student_id: string;
   student_name: string;
-
-  // ── Schedule identifiers ─────────────────────────────────────────────────
-  schedule_id: string;      // Firestore doc ID of the classroom_schedule
+  schedule_id: string;
   subject_name: string;
   classroom_name: string;
   schedule_type: ScheduleType;
-  time_start: string;       // scheduled class start  e.g. "08:00"
-  time_end: string;         // scheduled class end    e.g. "10:00"
-
-  // ── Daily logs ───────────────────────────────────────────────────────────
-  /**
-   * Append one TimeLog per session day.
-   * Use logAttendance() to add and updateTimeOut() to patch time_out.
-   */
+  time_start: string;
+  time_end: string;
   time_logs: TimeLog[];
-
   created_at?: Timestamp | Date;
   updated_at?: Timestamp | Date;
 };
@@ -106,10 +86,6 @@ const ATTENDANCE_COL = "attendance";
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-/**
- * Verify that a student is enrolled in the given schedule.
- * Throws if the schedule does not exist or the student is not enrolled.
- */
 async function assertStudentEnrolled(
   scheduleId: string,
   studentDocId: string
@@ -129,17 +105,6 @@ async function assertStudentEnrolled(
   return schedule;
 }
 
-/**
- * Warn (but do NOT throw) when the given date doesn't match any session.
- *
- * Reasons this can legitimately happen:
- *  - The sessions array in Firestore hasn't been populated yet.
- *  - A makeup / special class day was added outside the normal session list.
- *  - Clock/timezone drift between the device and the session date strings.
- *
- * We log a warning so the issue is visible in the console, but we still
- * write the attendance record so no real scan is ever silently dropped.
- */
 function warnIfInvalidSessionDate(
   schedule: ClassroomSchedule,
   date: string
@@ -162,10 +127,6 @@ function warnIfInvalidSessionDate(
   }
 }
 
-/**
- * Find an existing attendance document for a student + schedule pair.
- * Returns null when none exists yet.
- */
 async function findAttendanceDoc(
   scheduleId: string,
   studentDocId: string
@@ -183,74 +144,54 @@ async function findAttendanceDoc(
 
 // ─── ATTENDANCE: CREATE / LOG ─────────────────────────────────────────────────
 
-/**
- * Log (or initialise) an attendance entry for one session day.
- *
- * Behaviour:
- *  1. Validates student is enrolled in the schedule (via scheduleService).
- *  2. Warns if `date` doesn't match a session in the schedule's `sessions` array (non-blocking).
- *  3. If no attendance document exists for student + schedule → creates one.
- *  4. If the document already exists → appends a new TimeLog for the date.
- *     (Does NOT overwrite an existing log for the same date; call updateTimeOut
- *      or updateTimeIn instead.)
- *
- * Returns the Firestore doc ID of the attendance document.
- */
 export async function logAttendance(data: {
   student_doc_id: string;
   student_id: string;
   student_name: string;
   schedule_id: string;
-  date: string;           // "YYYY-MM-DD"
-  time_in: string | null; // null → marked Absent immediately
+  date: string;
+  time_in: string | null;
   time_out: string | null;
 }): Promise<string> {
-  // 1. Enrollment + schedule validation
   const schedule = await assertStudentEnrolled(data.schedule_id, data.student_doc_id);
 
-  // 2. Session date check (warn only — never blocks a real scan)
   warnIfInvalidSessionDate(schedule, data.date);
 
-  // 3. Build the new TimeLog entry
   const newLog: TimeLog = {
-    date: data.date,
-    time_in: data.time_in,
+    date:     data.date,
+    time_in:  data.time_in,
     time_out: data.time_out,
-    status: computeStatus(data.time_in, schedule.time_start),
+    status:   computeStatus(data.time_in, schedule.time_start),
   };
 
-  // 4. Upsert the attendance document
   const existing = await findAttendanceDoc(data.schedule_id, data.student_doc_id);
 
   if (!existing) {
-    // Create a brand-new attendance doc for this student + schedule
     const ref = await addDoc(collection(firestore, ATTENDANCE_COL), {
-      student_doc_id:  data.student_doc_id,
-      student_id:      data.student_id,
-      student_name:    data.student_name,
-      schedule_id:     data.schedule_id,
-      subject_name:    schedule.subject_name,
-      classroom_name:  schedule.classroom_name,
-      schedule_type:   schedule.schedule_type,
-      time_start:      schedule.time_start,
-      time_end:        schedule.time_end,
-      time_logs:       [newLog],
-      created_at:      serverTimestamp(),
-      updated_at:      serverTimestamp(),
+      student_doc_id: data.student_doc_id,
+      student_id:     data.student_id,
+      student_name:   data.student_name,
+      schedule_id:    data.schedule_id,
+      subject_name:   schedule.subject_name,
+      classroom_name: schedule.classroom_name,
+      schedule_type:  schedule.schedule_type,
+      time_start:     schedule.time_start,
+      time_end:       schedule.time_end,
+      time_logs:      [newLog],
+      created_at:     serverTimestamp(),
+      updated_at:     serverTimestamp(),
     });
     return ref.id;
   }
 
-  // Guard: do not append a duplicate log for the same date
   const alreadyLogged = (existing.data.time_logs ?? []).some((l) => l.date === data.date);
   if (alreadyLogged) {
     throw new Error(
       `Attendance for student "${data.student_doc_id}" on "${data.date}" is already logged. ` +
-      `Use updateTimeIn() or updateTimeOut() to modify it.`
+      `Use updateTimeLog() to modify it.`
     );
   }
 
-  // Append the new log using arrayUnion
   await updateDoc(doc(firestore, ATTENDANCE_COL, existing.id), {
     time_logs:  arrayUnion(newLog),
     updated_at: serverTimestamp(),
@@ -262,37 +203,15 @@ export async function logAttendance(data: {
 // ─── ATTENDANCE: UPDATE ───────────────────────────────────────────────────────
 
 /**
- * Patch the `time_out` field on a specific date's TimeLog.
- * Also recomputes status now that the full session is known (optional —
- * status at time-out stays as-is since "Present" / "Late" is set on time-in).
+ * Atomically patch time_in and/or time_out on a specific date's TimeLog.
+ * Does a single read → transform → write to prevent race conditions where
+ * two sequential writes clobber each other (the old updateTimeIn/updateTimeOut
+ * pattern). Always prefer this over the individual helpers for sensor writes.
  */
-export async function updateTimeOut(
-  attendanceDocId: string,
-  date: string,      // "YYYY-MM-DD"  — identifies which log to patch
-  timeOut: string    // e.g. "10:05"
-): Promise<void> {
-  const snap = await getDoc(doc(firestore, ATTENDANCE_COL, attendanceDocId));
-  if (!snap.exists()) throw new Error("Attendance document not found.");
-
-  const record = snap.data() as AttendanceRecord;
-  const updatedLogs = (record.time_logs ?? []).map((log) =>
-    log.date === date ? { ...log, time_out: timeOut } : log
-  );
-
-  await updateDoc(doc(firestore, ATTENDANCE_COL, attendanceDocId), {
-    time_logs:  updatedLogs,
-    updated_at: serverTimestamp(),
-  });
-}
-
-/**
- * Patch the `time_in` and recompute `status` on a specific date's TimeLog.
- * Useful for correcting a mis-scan or manually entering late arrivals.
- */
-export async function updateTimeIn(
+export async function updateTimeLog(
   attendanceDocId: string,
   date: string,
-  timeIn: string | null
+  patch: { time_in?: string | null; time_out?: string | null }
 ): Promise<void> {
   const snap = await getDoc(doc(firestore, ATTENDANCE_COL, attendanceDocId));
   if (!snap.exists()) throw new Error("Attendance document not found.");
@@ -300,10 +219,18 @@ export async function updateTimeIn(
   const record = snap.data() as AttendanceRecord;
   const updatedLogs = (record.time_logs ?? []).map((log) => {
     if (log.date !== date) return log;
+
+    const newTimeIn  = "time_in"  in patch ? patch.time_in  : log.time_in;
+    const newTimeOut = "time_out" in patch ? patch.time_out : log.time_out;
+
     return {
       ...log,
-      time_in: timeIn,
-      status:  computeStatus(timeIn, record.time_start),
+      time_in:  newTimeIn  ?? log.time_in,
+      time_out: newTimeOut ?? log.time_out,
+      // Recompute status only when time_in is being changed
+      status: "time_in" in patch
+        ? computeStatus(newTimeIn ?? null, record.time_start)
+        : log.status,
     };
   });
 
@@ -313,11 +240,34 @@ export async function updateTimeIn(
   });
 }
 
-// ─── ATTENDANCE: READ ─────────────────────────────────────────────────────────
+/**
+ * Patch only time_out on a specific date's TimeLog.
+ * Kept for any manual correction UI that calls it directly.
+ * For sensor writes, use updateTimeLog() instead.
+ */
+export async function updateTimeOut(
+  attendanceDocId: string,
+  date: string,
+  timeOut: string
+): Promise<void> {
+  return updateTimeLog(attendanceDocId, date, { time_out: timeOut });
+}
 
 /**
- * Real-time listener for ALL attendance documents.
+ * Patch time_in and recompute status on a specific date's TimeLog.
+ * Kept for any manual correction UI that calls it directly.
+ * For sensor writes, use updateTimeLog() instead.
  */
+export async function updateTimeIn(
+  attendanceDocId: string,
+  date: string,
+  timeIn: string | null
+): Promise<void> {
+  return updateTimeLog(attendanceDocId, date, { time_in: timeIn });
+}
+
+// ─── ATTENDANCE: READ ─────────────────────────────────────────────────────────
+
 export function subscribeToAttendance(
   callback: (records: AttendanceRecord[]) => void
 ): () => void {
@@ -326,9 +276,6 @@ export function subscribeToAttendance(
   });
 }
 
-/**
- * Real-time listener filtered by schedule (subject).
- */
 export function subscribeToAttendanceBySchedule(
   scheduleId: string,
   callback: (records: AttendanceRecord[]) => void
@@ -342,9 +289,6 @@ export function subscribeToAttendanceBySchedule(
   });
 }
 
-/**
- * Real-time listener filtered by student doc ID.
- */
 export function subscribeToAttendanceByStudent(
   studentDocId: string,
   callback: (records: AttendanceRecord[]) => void
@@ -385,10 +329,6 @@ export async function deleteStudentDoc(id: string): Promise<void> {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Compute attendance status from actual vs scheduled start time.
- * Grace period: 15 minutes.
- */
 export function computeStatus(
   timeIn: string | null,
   scheduledStart: string
@@ -401,19 +341,12 @@ export function computeStatus(
   return actualMins <= scheduledMins + 15 ? "Present" : "Late";
 }
 
-/**
- * From a student's attendance document, return a summary map:
- * date → TimeLog, for quick lookups per session day.
- */
 export function buildLogsByDate(
   record: AttendanceRecord
 ): Map<string, TimeLog> {
   return new Map((record.time_logs ?? []).map((l) => [l.date, l]));
 }
 
-/**
- * Compute overall summary stats from a student's time_logs array.
- */
 export function summariseLogs(logs: TimeLog[]): {
   total: number;
   present: number;

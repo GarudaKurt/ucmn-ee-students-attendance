@@ -42,6 +42,8 @@ import {
 import {
   Student,
   subscribeToStudents,
+  addEnrolledSubject,
+  removeEnrolledSubject, 
 } from "@/app/services/studentService";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -607,12 +609,19 @@ const ClassroomSchedules: React.FC = () => {
     scheduleId: string,
     student: Student
   ) => {
+    // 1. Write to classroom_schedules.enrolled_students (existing)
     await enrollStudent(scheduleId, {
       uid:         student.id!,
       displayName: student.full_name,
       email:       student.email,
     });
-  }, []);
+
+    // 2. Write to students.enrolled_subjects (new — makes attendance table work)
+    const schedule = schedules.find((s) => s.id === scheduleId);
+    if (schedule) {
+      await addEnrolledSubject(student.id!, schedule);
+    }
+  }, [schedules]);
 
   /**
    * Remove a student from the schedule.

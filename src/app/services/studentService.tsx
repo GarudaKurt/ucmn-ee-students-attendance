@@ -156,3 +156,51 @@ export function subscribeToSchedules(
     callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ClassroomSchedule)));
   });
 }
+
+/**
+ * Add a subject to a student's enrolled_subjects array.
+ * Called after enrollStudent() so the attendance table can see it.
+ */
+export async function addEnrolledSubject(
+  studentDocId: string,
+  schedule: ClassroomSchedule
+): Promise<void> {
+  const { arrayUnion } = await import("firebase/firestore");
+  const newSubject: EnrolledSubject = {
+    schedule_id:    schedule.id!,
+    subject_name:   schedule.subject_name,
+    classroom_name: schedule.classroom_name,
+    instructor:     schedule.instructor,
+    schedule_type:  schedule.schedule_type,
+    start_date:     schedule.start_date,
+    end_date:       schedule.end_date,
+    time_start:     schedule.time_start,
+    time_end:       schedule.time_end,
+    enrolled_at:    new Date(),
+  };
+  await updateDoc(doc(firestore, STUDENTS_COL, studentDocId), {
+    enrolled_subjects: arrayUnion(newSubject),
+    updated_at: serverTimestamp(),
+  });
+}
+/**
+ * Remove a subject from a student's enrolled_subjects array.
+ * Called after unenrollStudent() to keep both collections in sync.
+ */
+export async function removeEnrolledSubject(
+  studentDocId: string,
+  scheduleId: string
+): Promise<void> {
+  const { arrayRemove } = await import("firebase/firestore");
+  const snap = await getDoc(doc(firestore, STUDENTS_COL, studentDocId));
+  if (!snap.exists()) return;
+  const student = snap.data() as Student;
+  const subjectToRemove = student.enrolled_subjects.find(
+    (s) => s.schedule_id === scheduleId
+  );
+  if (!subjectToRemove) return;
+  await updateDoc(doc(firestore, STUDENTS_COL, studentDocId), {
+    enrolled_subjects: arrayRemove(subjectToRemove),
+    updated_at: serverTimestamp(),
+  });
+}
